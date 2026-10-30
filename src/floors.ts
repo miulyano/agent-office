@@ -779,12 +779,13 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
           if (d.time && !moving) {
             glyph(c, 'clock', lx, iy + 7.8, work ? TIME_COLOR : DIM)
             labels.push({ x: lx + 7, y: iy + 7.5, text: d.time, px, color: work ? TIME_COLOR : DIM, align: 'left', w: 600 })
-            lx += 7 + d.time.length * 2.2 + 4
+            lx += 7 + d.time.length * (px * 0.7) + 4
           }
           if (geo.wide) labels.push({ x: lx, y: iy + 7.3, text: p.model, px, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : DIM, align: 'left', w: 600 })
-          const cost = p.boss ? (p.head ?? st.producer).cost : p.agent!.cost
-          banknote(c, geo.x + cwid - 9, iy + 7.6)
-          labels.push({ x: geo.x + cwid - 10, y: iy + 7.5, text: money(cost), px, color: GOLD, align: 'right', w: 600 })
+          // the banknote goes before its figure, as the clock before its time
+          const cost = money(p.boss ? (p.head ?? st.producer).cost : p.agent!.cost)
+          banknote(c, geo.x + cwid - 3 - cost.length * (px * 0.7) - 9, iy + 7.6)
+          labels.push({ x: geo.x + cwid - 2, y: iy + 7.5, text: cost, px, color: GOLD, align: 'right', w: 600 })
         }
         // salary drips in: while working, coins fly from the screen to the banknote
         if (work) {
