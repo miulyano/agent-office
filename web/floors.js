@@ -132,6 +132,10 @@ function doing(p, st, now) {
             return timed(busy(pr.tool, pr.activity));
         if (pr.isBusy)
             return timed({ place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true });
+        const session = Math.max(1, (st.sessions ?? []).findIndex(h => h === p.head) + 1);
+        const waits = (st.shells ?? []).filter(s => s.status === 'running' && s.session === session);
+        if (waits.length)
+            return { place: 'desk', pose: 'think', icon: 'think', text: 'ждёт фон', work: false, time: span(now - waits[0].start) };
         return { place: 'desk', pose: 'drink', icon: 'coffee', text: 'ждёт задачу', work: false };
     }
     if (p.waiting)
@@ -587,7 +591,7 @@ const GLYPH = {
     tool: ['.#.#.', '.###.', '..#..', '..#..', '..#..'], think: ['.....', '.....', '#.#.#', '.....', '.....'],
     coffee: ['.#.#.', '.....', '####.', '#..##', '####.'], done: ['....#', '...#.', '#.#..', '.#...', '.....'],
     sleep: ['####.', '..#..', '.#...', '####.', '.....'], walk: ['..#..', '.###.', '#.#.#', '..#..', '.#.#.'],
-    lift: ['#####', '#.#.#', '#.#.#', '#.#.#', '#####'], home: ['..#..', '.###.', '#####', '.#.#.', '.#.#.'], rest: ['..##.', '..#.#', '..#..', '###..', '##...'],
+    bad: ['#...#', '.#.#.', '..#..', '.#.#.', '#...#'], lift: ['#####', '#.#.#', '#.#.#', '#.#.#', '#####'], home: ['..#..', '.###.', '#####', '.#.#.', '.#.#.'], rest: ['..##.', '..#.#', '..#..', '###..', '##...'],
 };
 const ICON_COLOR = { clock: '#bfe3ff', home: '#e0a070', read: '#7fdcff', edit: '#ffd060', write: '#8af0a0', grep: '#ffa070', bash: '#60ff90', web: '#9ab8ff', phone: '#ff8ac8', skill: '#ffd060', tool: '#d8d8f0', think: '#d8d8f0', coffee: '#e0b080', done: '#8af0a0', sleep: '#a0a8d0', walk: '#d8d8f0', lift: '#d8d8f0', rest: '#c8a0ff' };
 const DIM = 'rgba(235,235,250,0.45)'; // icons and figures of someone not at work
@@ -744,7 +748,9 @@ function sky(c, w, h, tm, t) {
 // a cell is 48×61: two info lines (what it does; model and money) · bubble · desk · name plate · slab.
 // A cell's `top` is where its scene starts, after the first 6 px of the info lines.
 const FL = { pad: 6, shaft: 19, plaque: 54, cw: 48, rowH: 61, info: 6, roof: 24, ground: 10, minCols: 8, maxCols: 12 };
-function layout(b, room, key) {
+const RACK = { w: 24, h: 36, shelf: 5, steps: [0, 60, 180, 300, 600, 900, 1800] }; // a shelf lights up at each age, in seconds
+const shellColor = (s) => s.status === 'failed' ? '#e05a5a' : s.status === 'completed' ? '#4ade80' : s.status === 'running' ? GOLD : '#8a8fb0';
+function layout(b, room, key, shells) {
     const f = FIGS[room.fig];
     const cols = Math.max(FL.minCols, Math.min(FL.maxCols, ...b.floors.map(fl => fl.cells.length)));
     const x0 = FL.pad + FL.shaft + FL.plaque, width = x0 + cols * FL.cw + FL.pad;
@@ -761,6 +767,10 @@ function layout(b, room, key) {
             cells.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 });
     });
     y += FL.rowH;
+    // the server room exists while there is something to show, right under the cabinet: no scrolling to it
+    const srv = shells ? y : 0;
+    if (shells)
+        y += FL.rowH;
     const floors = [];
     for (const def of b.floors) {
         // a floor whose free-lancers all went home still keeps one row of empty desks
@@ -775,7 +785,7 @@ function layout(b, room, key) {
     }
     const lobby = y + FL.info;
     const couchX = x0 + 60, couchW = width - FL.pad - 12 - couchX;
-    return { key, f, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
+    return { key, f, srv, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
 }
 export function mountFloors(scene, overlay, onError) {
     const ctx = scene.getContext('2d'), octx = overlay.getContext('2d');
@@ -797,10 +807,11 @@ export function mountFloors(scene, overlay, onError) {
             return;
         built = building(st, now);
         const room = OFFICES[style.office] ?? OFFICES.cozy;
-        const key = style.office + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + (c.person ? '+' : '')).join(',')).join('/');
+        const shells = !!st.shells?.length;
+        const key = style.office + '|' + shells + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + (c.person ? '+' : '')).join(',')).join('/');
         if (L && L.key === key)
             return;
-        L = layout(built, room, key);
+        L = layout(built, room, key, shells);
         if (seats.couch.length !== L.seats)
             seats.couch = Array.from({ length: L.seats }, (_, i) => seats.couch[i] ?? null);
         if (scene.width !== L.width || scene.height !== L.height) {
@@ -939,6 +950,56 @@ export function mountFloors(scene, overlay, onError) {
             labels.push({ x: xL + 4, y: fl.y + 3.3, text: fl.def.name, px: 3.4, color: '#2445a8', w: 600, align: 'left', maxw: FL.plaque - 10, stroke: false });
             labels.push({ x: xL + 4, y: fl.y + 8.6, text: `в деле ${busyHere}` + (fl.def.home ? ` · дома ${fl.def.home}` : ''), px: 3.1, color: '#2a2a33', align: 'left', maxw: FL.plaque - 10, stroke: false });
             labels.push({ x: xL + 4, y: fl.y + 13.8, text: money(sum), px: 3.3, color: '#1f7a3a', w: 600, align: 'left', stroke: false });
+        }
+        // server room: a rack for each background command, or a shelf for each once the racks run out
+        if (L.srv) {
+            const ST = L.srv + FL.info, shells = st.shells ?? [], wall = shade(room.wall, 0.26), floor = shade(room.floor, 0.42), { w: rw, h: rh, shelf, steps } = RACK;
+            const shelves = steps.length, shelfY = (ry, k) => ry + 2 + (shelves - 1 - k) * shelf;
+            R(c, xL, L.srv, xR - xL, 46 + FL.info, wall);
+            R(c, x0, L.srv, xR - x0, 8 + FL.info, shade(wall, 0.78));
+            R(c, xL, ST + 46, xR - xL, 7, floor);
+            R(c, xL, ST + 46, xR - xL, 1, shade(floor, 0.7));
+            R(c, xL, ST + 53, xR - xL, 2, room.slab);
+            doorTops.push(ST);
+            const runs = shells.filter(s => s.status === 'running');
+            whiteboard(c, xL + 2, L.srv + 2, FL.plaque - 6, 19);
+            labels.push({ x: xL + 4, y: L.srv + 3.3, text: 'СЕРВЕРНАЯ', px: 3.4, color: '#2445a8', w: 600, align: 'left', stroke: false });
+            labels.push({ x: xL + 4, y: L.srv + 8.6, text: 'идёт ' + runs.length, px: 3.1, color: '#2a2a33', align: 'left', stroke: false });
+            if (runs.length)
+                labels.push({ x: xL + 4, y: L.srv + 13.8, text: 'дольше всех ' + span(now - Math.min(...runs.map(s => s.start))), px: 3.1, color: '#1f7a3a', w: 600, align: 'left', maxw: FL.plaque - 10, stroke: false });
+            const ageOf = (s) => ((s.end || now) - s.start) / 1000;
+            const dense = shells.length > L.cols, cap = L.cols * shelves, hidden = shells.length - cap + 1;
+            if (dense) {
+                const bad = shells.filter(s => s.status === 'failed').length, done = shells.filter(s => s.status === 'completed').length;
+                labels.push({ x: x0 + 2, y: ST - 5, text: `идёт ${runs.length}` + (bad ? ` · упало ${bad}` : '') + (done ? ` · готово ${done}` : '') + (hidden > 1 ? ` · ещё ${hidden} не поместилось` : ''), px: 3.6, color: '#ffffff', align: 'left', w: 600 });
+            }
+            for (let i = 0; i < L.cols; i++) {
+                const x = x0 + i * FL.cw, rx = x + 12, ry = ST + 10, single = dense ? undefined : shells[i];
+                box(c, rx, ry, rw, rh, '#14152a', '#44486a');
+                // a single rack fills from the bottom with age; a dense one has a shelf per command, as wide as it is old
+                for (let k = 0; k < shelves; k++) {
+                    const y = shelfY(ry, k), n = i * shelves + (shelves - 1 - k), s = dense ? shells[n] : single;
+                    R(c, rx + 3, y, rw - 6, 3, '#23253a');
+                    if (!s || (!dense && s.status === 'running' && ageOf(s) < steps[k]))
+                        continue;
+                    if (dense && hidden > 1 && n === cap - 1) {
+                        labels.push({ x: rx + rw / 2, y: y - 0.6, text: '+' + hidden, px: 3.1, color: GOLD, w: 600 });
+                        continue;
+                    }
+                    const share = dense && s.status === 'running' ? Math.min(1, Math.log(1 + ageOf(s) / 30) / Math.log(121)) : 1;
+                    R(c, rx + 3, y, Math.max(2, Math.round((rw - 6) * share)), 3, shade(shellColor(s), 0.72));
+                    if (s.status === 'running' && (Math.floor(t * 3) + n) % 4 !== 0)
+                        R(c, rx + rw - 5, y + 1, 1, 1, '#ffffff');
+                }
+                if (!single)
+                    continue;
+                const running = single.status === 'running', tint = running ? TIME_COLOR : shellColor(single);
+                if (running)
+                    lights.push({ kind: 'screen', x: rx + rw / 2, y: ry + rh / 2, bash: true });
+                glyph(c, running ? 'clock' : single.status === 'completed' ? 'done' : 'bad', x + 2, ST - 4.5, tint);
+                labels.push({ x: x + 9, y: ST - 5, text: span(ageOf(single) * 1000), px: 3.6, color: tint, align: 'left', w: 600 });
+                labels.push({ x: x + FL.cw / 2, y: ST + 47.2, text: single.name, px: 3.1, color: running ? '#ffffff' : 'rgba(235,235,250,0.62)', maxw: FL.cw - 3 });
+            }
         }
         // lobby
         R(c, xL, lobby - FL.info, xR - xL, 46 + FL.info, room.wall);

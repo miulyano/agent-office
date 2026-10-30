@@ -142,6 +142,18 @@ def history(now):
             os.utime(path, (at.timestamp(), at.timestamp()))
 
 
+def background(at, name, task, ended=0, status='completed'):
+    """Команда руководителя, ушедшая в фон: вызов, ответ с id задачи и, если кончилась, уведомление."""
+    call = said(at, BAKERY, 'Bash', {'command': 'x', 'description': name, 'run_in_background': True}, 'claude-opus-5-5')
+    tool = call['message']['content'][0]['id'] = uuid.uuid4().hex
+    rows = [call, {'type': 'user', 'timestamp': iso(at), 'cwd': BAKERY, 'toolUseResult': {'backgroundTaskId': task},
+                   'message': {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': tool, 'content': 'в фоне'}]}}]
+    if ended:
+        rows.append({'type': 'queue-operation', 'operation': 'enqueue', 'timestamp': iso(ended),
+                     'content': '<task-notification>\n<task-id>%s</task-id>\n<status>%s</status>\n</task-notification>' % (task, status)})
+    return rows
+
+
 def side_sessions(now):
     """Несколько других сессий за сутки: список справа."""
     sessions = [('weather-api', 'Кэш прогнозов в Redis', 'claude-sonnet-5-5', 2.4, 1500, 14),
@@ -240,6 +252,8 @@ def main_session(now):
     for i, (tool, inp) in enumerate([('Read', {'file_path': 'plan.md'}), ('Agent', {'subagent_type': 'bakery:researcher'}), ('Agent', {'subagent_type': 'bakery:frontend'}),
                                      ('Agent', {'subagent_type': 'bakery:backend'}), ('Skill', {'skill': 'tdd'}), ('Agent', {'subagent_type': 'bakery:tester'})]):
         rows.append(said(now - 2800 + i * 400, BAKERY, tool, inp, 'claude-opus-5-5', 1.5))
+    rows += background(now - 1900, 'Сборка витрины', 'bake1') + background(now - 420, 'Прогон e2e', 'bake2')
+    rows += background(now - 200, 'Сборка образа', 'bake3', now - 45, 'failed')
     rows.append(said(now, BAKERY, 'Agent', {'subagent_type': 'bakery:reviewer'}, 'claude-opus-5-5', 1.5))
     put(path, rows, 'w')
     live = [

@@ -10,7 +10,7 @@
   /api/sessions             сессии за последние сутки; today — потрачено сегодня
   /api/stats?p=codex        траты по дням, моделям и папкам за всё время, почасово — за 5 недель;
                             p — один провайдер: claude или codex
-  /api/state?s=<id>         офис одной сессии (руководитель, агенты, журнал)
+  /api/state?s=<id>         офис одной сессии (руководитель, агенты, журнал, фоновые команды)
   POST /api/office?s=<id>   пересобрать офис папки сессии (новых агентов сервер сажает сам)
   POST /api/shot?name=<имя> положить скриншот (image/png) в папку скриншотов
 """
@@ -43,6 +43,9 @@ CODEX_ACCENT = '#4fb3c8'  # вывеска офиса Codex
 RECENT_S = 24 * 3600     # сессии в списке
 LIVE_S = 10 * 60         # тишина дольше — сессия считается остывшей
 AGENT_IDLE_S = 10 * 60   # агент без finished и без записей дольше — ушёл
+BG_DONE_S = 2 * 60       # столько завершённая фоновая команда стоит в серверной
+BG_FAILED_S = 10 * 60    # упавшая дольше: её надо успеть заметить
+BG_LOST_S = 3 * 3600     # команда без итога дольше — потеряна: журнал не пишет, что сессию закрыли
 LOG_MAX = 80
 # $ за 1M токенов: вход, выход, чтение кэша. Цены меняются — правьте здесь.
 PRICES = {
@@ -68,6 +71,7 @@ PRICES = {
 LOCK = threading.Lock()  # журналы дочитываются по одному
 LINKED_RE = re.compile(r'(\S+) = (local_[0-9a-f-]+) \(')
 BACKGROUND_RE = re.compile(r'^Background \(from the session that started this one\)', re.M)
+TASK_NOTE_RE = re.compile(r'<task-notification>.*?<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>', re.S)
 MARKS = '①②③④⑤⑥⑦⑧⑨'
 
 
@@ -315,6 +319,13 @@ def has_tool_result(content):
     return isinstance(content, list) and any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content)
 
 
+def shell_shown(shell, now_ms):
+    if not shell['end']:
+        return now_ms - shell['start'] < BG_LOST_S * 1000
+    keep = BG_FAILED_S if shell['status'] == 'failed' else BG_DONE_S
+    return now_ms - shell['end'] < keep * 1000
+
+
 class Tail:
     """Журнал, дочитываемый с места остановки: вызовы, последнее действие, хвост."""
 
@@ -342,6 +353,8 @@ class Tail:
         self.cost = 0.0
         self.daily = {}        # локальная дата → $, последние два дня
         self.paid = set()      # ответ модели пишется в журнал кусками — платим за id один раз
+        self.calling_shells = {}  # вызовы Bash без результата: id → (at, что делает)
+        self.shells = {}       # фоновые команды: id задачи → запись для серверной
 
     def feed(self):
         try:
@@ -386,6 +399,11 @@ class Tail:
             return
         if kind == 'attachment':
             self.listing(d.get('attachment') or {})
+            self.notified((d.get('attachment') or {}).get('prompt'), ms(d.get('timestamp')))
+            return
+        if kind == 'queue-operation':
+            if d.get('operation') == 'enqueue':
+                self.notified(d.get('content'), ms(d.get('timestamp')))
             return
         if kind not in ('user', 'assistant'):
             return
@@ -401,7 +419,8 @@ class Tail:
         if kind == 'user':
             # новый запрос или результат инструмента — ход продолжается
             self.busy = True
-            self.note_links(content)
+            self.note_links(content, at)
+            self.shell_answered(d, content, at)
             if isinstance(content, str) and not d.get('isMeta'):
                 self.activity, self.activity_at = 'думает', at
             if not d.get('isMeta') and not d.get('isCompactSummary') and not has_tool_result(content):
@@ -419,11 +438,32 @@ class Tail:
             self.activity, self.activity_at = what, at
             self.tool = tool_kind(b.get('name', ''))
             self.events.append((at, what))
+            if b.get('name') == 'Bash' and b.get('id'):
+                self.calling_shells[b['id']] = (at, what)
         if len(self.events) > LOG_MAX:
             self.events = self.events[-LOG_MAX:]
         self.busy = msg.get('stop_reason') != 'end_turn' or bool(uses)
 
-    def note_links(self, content):
+    def shell_answered(self, d, content, at):
+        """Результат вызова: команда либо закончилась, либо ушла в фон. Считаем от самого вызова."""
+        result = d.get('toolUseResult')
+        task = result.get('backgroundTaskId') if isinstance(result, dict) else None
+        for b in content if isinstance(content, list) else []:
+            call = self.calling_shells.pop(b.get('tool_use_id'), None) if isinstance(b, dict) else None
+            if call and task:
+                self.shells[task] = {'id': task, 'name': call[1], 'status': 'running', 'start': call[0] or at, 'end': 0}
+
+    def notified(self, text, at):
+        """Итог приходит уведомлением, одним и тем же в нескольких записях: время берём из первой."""
+        for task, status in TASK_NOTE_RE.findall(text) if isinstance(text, str) and at else ():
+            shell = self.shells.get(task)
+            if shell and not shell['end']:
+                shell.update(status=status, end=at)
+
+    def running_shells(self, now_ms):
+        return sum(1 for s in self.shells.values() if shell_shown(s, now_ms) and not s['end'])
+
+    def note_links(self, content, at=0):
         """Приложение дописывает в запрос, кого эта сессия породила, а породившей — вводную."""
         # результаты инструментов не считаются: там эти фразы могут быть процитированы
         texts = [content] if isinstance(content, str) else [b.get('text', '') for b in content or [] if isinstance(b, dict) and b.get('type') == 'text']
@@ -432,6 +472,7 @@ class Tail:
                 self.child = True
             if 'Linked sessions now' in text:
                 self.linked = {m.group(2): m.group(1) for m in LINKED_RE.finditer(text)}
+            self.notified(text, at)
 
     def pay(self, model, usage, at):
         usd = message_cost(model, usage)
@@ -1785,14 +1826,16 @@ def sessions():
         live = now - mtime < LIVE_S
         agents = agents_of(pdir, sid, now * 1000)
         working = sum(a['isWorking'] for a in agents) + (1 if live and t.busy else 0)
+        shells = t.running_shells(now * 1000)
         out.append({
             'id': sid,
             'provider': 'claude',
             'title': title_of(t, sid),
             'project': project_name(pdir, t.cwd),
             'at': int(mtime * 1000),
-            'isLive': live,
+            'isLive': live or shells > 0,
             'working': working,
+            'shells': shells,
             'agents': len(agents),
             'cost': round(t.cost + sum(a['cost'] for a in agents), 2),
             'today': round(today_cost(t) + sum(a['today'] for a in agents), 2),
@@ -1959,6 +2002,10 @@ def room(tails, agents, office, heads):
     for a in agents:
         del a['events']
     head = heads[0]
+    now_ms = time.time() * 1000
+    shells = [dict(s, session=i) for i, t in enumerate(tails, 1) for s in t.shells.values() if shell_shown(s, now_ms)]
+    # упавшие первыми: в плотной серверной они не должны уйти за край
+    shells.sort(key=lambda s: ({'failed': 0, 'running': 1}.get(s['status'], 2), s['start']))
     return {
         'agents': agents,
         'producer': {k: head[k] for k in ('isBusy', 'activity', 'at', 'calls', 'cost', 'model', 'tool')},
@@ -1967,6 +2014,7 @@ def room(tails, agents, office, heads):
         'office': office,
         'log': [{'at': at, 'who': who, 'text': clip(text)} for at, who, text in log[-LOG_MAX:]],
         'since': head['since'],
+        'shells': shells,
     }
 
 
@@ -1981,7 +2029,7 @@ def state(sid):
         for i, s in enumerate(members, 1):
             t, pdir, mtime = tails[s]
             live = now - mtime < LIVE_S
-            heads.append(head_of(t, s, live, t.busy and live))
+            heads.append(head_of(t, s, live or t.running_shells(now * 1000) > 0, t.busy and live))
             own = agents_of(pdir, s, now * 1000)
             for a in own:
                 a['session'] = i

@@ -21,6 +21,9 @@ export type Producer = { isBusy: boolean; activity: string; at: number; calls: n
 // руководитель одной сессии задачи; первый — корень, остальные порождены приложением
 export type Head = Producer & { id: string; title: string; isLive: boolean; branch: string; since: number }
 
+// фоновая команда руководителя; status из уведомления: completed, failed, killed
+export type Shell = { id: string; name: string; session: number; status: string; start: number; end: number }
+
 export type Studio = {
   agents: Agent[]
   producer: Producer
@@ -29,6 +32,7 @@ export type Studio = {
   log: LogLine[]
   since: number
   office: Office
+  shells?: Shell[]
 }
 
 export type OfficeDesk = { type: string; name: string; short?: string; prop: string; shirt: string; hair: string; skin: number; locked?: boolean }

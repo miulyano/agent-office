@@ -36,7 +36,7 @@
   header button { flex: none; padding: 4px 10px; }
   #shot { display: inline-flex; align-items: center; gap: 6px; }
   header .total { font: 700 15px Menlo, monospace; color: var(--gold); }
-  .sess .m .usd { color: var(--gold); font-family: Menlo, monospace; }
+  .sess .m .usd, .sess .m .fon { color: var(--gold); font-family: Menlo, monospace; }
 
   button { --c: var(--rim); background: var(--floor); color: var(--text); border: 0; border-radius: 0; padding: 5px 12px; margin: var(--px); font: 600 12px -apple-system, Helvetica, sans-serif; letter-spacing: .03em; cursor: pointer; }
   button:hover { background: #3a3e63; }
@@ -261,10 +261,11 @@ function drawList() {
     const work = s.working ? `в работе ${s.working}` : ago(s.at)
     const agents = s.agents ? ` · агентов ${s.agents}` : ''
     const usd = s.cost ? ` · <span class="usd">${money(s.cost)}</span>` : ''
+    const fon = s.shells ? ` · <span class="fon">фон ${s.shells}</span>` : ''
     const branch = s.kid && s.branch ? ` · <span class="br">${esc(s.branch)}</span>` : ''
     return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}">
       <div class="t"><span class="d ${cls}"></span><span>${s.kid ? '↳ ' : ''}${esc(s.title)}</span></div>
-      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${agents}${usd}</div></button>`
+      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${agents}${fon}${usd}</div></button>`
   }).join('')
   // не трогать список без перемен: иначе клик попадает в уже заменённую кнопку
   if (html !== list.dataset.html) {
