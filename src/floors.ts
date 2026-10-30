@@ -9,7 +9,7 @@ import { GUESTS, deskName, deskOf, money } from './office.js'
 // ── data → people ──────────────────────────────────────────────────────────
 type Grade = 'intern' | 'middle' | 'senior' | 'lead'
 type Look = { id: string; skin: string; hair: string; shirt: string; pants: string; cap: string; crown: boolean }
-// waiting: a desk whose agent this session has not called yet — its owner sits and waits
+// waiting: a desk whose agent this session has not called yet — it stands empty with its name plate
 type Person = { key: string; name: string; grade: Grade; model: string; look: Look; boss: boolean; agent?: Agent; head?: Head; desk?: boolean; waiting?: boolean }
 type Cell = { key: string; person?: Person; name: string }
 type FloorDef = { name: string; cells: Cell[]; free?: boolean; home: number }
@@ -55,7 +55,7 @@ const AWAY = 30 * 60e3, DONE = 15e3, THINK = 60e3, COFFEE = 3 * 60e3
 
 // Floors from the folder's office: its zones, then the free-lance floor for built-in agents.
 // A floor never folds: every desk keeps its cell. A desk's owner is the newest agent of its type;
-// one who went home leaves an empty chair with a sign, one never called sits and waits.
+// one who went home leaves an empty chair with a sign, one never called leaves the desk empty.
 // Extra copies of a type working at once get extra cells; built-in agents get cells of their own.
 const FREE_HOME = 4  // free-lancers gone home that still keep a cell; the rest are only counted
 
@@ -756,12 +756,14 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
       const hip = geo.sy - f.shin
       drawChair(c, room, f, geo.sx, geo.sy)
       const person = () => blit(c, sprite(f, d!.pose, d!.pose === 'type' ? Math.floor(t * 5) % 2 : 0, p!.grade, p!.look, work && d!.icon !== 'think'), geo.sx, hip, false, false)
-      if (atDesk && d!.pose !== 'sleep') person()
+      // a desk never called stays empty: the chair and the name plate wait, nobody sits
+      const seated = atDesk && !p!.waiting
+      if (seated && d!.pose !== 'sleep') person()
       const scr = drawDesk(c, room, f, geo.sx, geo.sy, !!geo.wide, work, d?.icon ?? '', atDesk && d!.icon === 'coffee', geo === L.boss ? arrived : 0, t)
-      if (atDesk && d!.pose === 'sleep') person()
+      if (seated && d!.pose === 'sleep') person()
       if (d?.place === 'gone' && !(m?.trip && t - m.trip.t0 < WALK)) homeSign(c, geo.sx + f.thigh + 1, geo.sy - f.shin - deskH(f))
       if (work) lights.push({ kind: 'screen', x: scr.mx, y: scr.my, bash: d!.icon === 'bash' })
-      if (atDesk) lights.push({ kind: 'lamp', x: geo.sx + 16, y: geo.top + 30 })
+      if (seated) lights.push({ kind: 'lamp', x: geo.sx + 16, y: geo.top + 30 })
       if (atDesk && d!.icon) bubbles.push({ icon: d!.icon, x: geo.sx + 2, y: geo.top + 21 })
       const cwid = geo.wide ? FL.cw * 2 : FL.cw, iy = geo.top - FL.info
       if (p && d) {

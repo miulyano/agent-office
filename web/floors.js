@@ -40,7 +40,7 @@ function lookOf(key, desk, shirt, crown = false) {
 const AWAY = 30 * 60e3, DONE = 15e3, THINK = 60e3, COFFEE = 3 * 60e3;
 // Floors from the folder's office: its zones, then the free-lance floor for built-in agents.
 // A floor never folds: every desk keeps its cell. A desk's owner is the newest agent of its type;
-// one who went home leaves an empty chair with a sign, one never called sits and waits.
+// one who went home leaves an empty chair with a sign, one never called leaves the desk empty.
 // Extra copies of a type working at once get extra cells; built-in agents get cells of their own.
 const FREE_HOME = 4; // free-lancers gone home that still keep a cell; the rest are only counted
 function building(st, now) {
@@ -1057,16 +1057,18 @@ export function mountFloors(scene, overlay, onError) {
             const hip = geo.sy - f.shin;
             drawChair(c, room, f, geo.sx, geo.sy);
             const person = () => blit(c, sprite(f, d.pose, d.pose === 'type' ? Math.floor(t * 5) % 2 : 0, p.grade, p.look, work && d.icon !== 'think'), geo.sx, hip, false, false);
-            if (atDesk && d.pose !== 'sleep')
+            // a desk never called stays empty: the chair and the name plate wait, nobody sits
+            const seated = atDesk && !p.waiting;
+            if (seated && d.pose !== 'sleep')
                 person();
             const scr = drawDesk(c, room, f, geo.sx, geo.sy, !!geo.wide, work, d?.icon ?? '', atDesk && d.icon === 'coffee', geo === L.boss ? arrived : 0, t);
-            if (atDesk && d.pose === 'sleep')
+            if (seated && d.pose === 'sleep')
                 person();
             if (d?.place === 'gone' && !(m?.trip && t - m.trip.t0 < WALK))
                 homeSign(c, geo.sx + f.thigh + 1, geo.sy - f.shin - deskH(f));
             if (work)
                 lights.push({ kind: 'screen', x: scr.mx, y: scr.my, bash: d.icon === 'bash' });
-            if (atDesk)
+            if (seated)
                 lights.push({ kind: 'lamp', x: geo.sx + 16, y: geo.top + 30 });
             if (atDesk && d.icon)
                 bubbles.push({ icon: d.icon, x: geo.sx + 2, y: geo.top + 21 });
