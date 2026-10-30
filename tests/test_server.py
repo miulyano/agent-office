@@ -1368,6 +1368,22 @@ class OfficeTest(unittest.TestCase):
         self.assertTrue(all(d['prop'] in server.PROPS for z in office['zones'] for d in z['desks']))
         self.assertEqual(office['title'], 'ОФИС · APP')
 
+    def test_auto_office_seats_builtins_as_guests(self):
+        office = server.auto_office('/work/app', {'p:scout': '', 'Explore': '', 'general-purpose': '', 'claude-code-guide': ''})
+        self.assertEqual(office['guests'], {'Explore': {'name': 'Разведчик', 'prop': 'binoculars'},
+                                            'general-purpose': {'name': 'Универсал', 'prop': 'layers'},
+                                            'claude-code-guide': {'name': 'Проводник', 'prop': 'books'}})
+        self.assertNotIn('Explore', [d['type'] for z in office['zones'] for d in z['desks']])
+
+    def test_session_view_keeps_guests_this_session_can_call(self):
+        saved = {'lang': 'ru', 'zones': [{'name': 'КОД', 'desks': [{'type': 'k:b', 'name': 'Правщик'}]}],
+                 'guests': {'Explore': {'name': 'Следопыт', 'prop': 'binoculars'}, 'Plan': {'name': 'Архитектор', 'prop': 'chart'}}}
+        got = server.session_view(saved, {'k:b': '', 'Explore': '', 'claude': ''}, called=['general-purpose'])
+        # the saved name stays; Plan is not in this session; a new built-in gets a name without the model
+        self.assertEqual(got['guests'], {'Explore': {'name': 'Следопыт', 'prop': 'binoculars'},
+                                         'claude': {'name': 'Помощник', 'prop': 'tablet'},
+                                         'general-purpose': {'name': 'Универсал', 'prop': 'layers'}})
+
     def test_model_answer_is_tidied(self):
         raw = {
             'title': 'Мастерская',
