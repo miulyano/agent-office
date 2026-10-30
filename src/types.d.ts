@@ -31,6 +31,8 @@ export type Studio = {
   cost: number
   log: LogLine[]
   since: number
+  worked?: number   // мс, когда работал хоть кто-то: руководители, агенты, фоновые команды
+  workingSince?: number   // начало идущего отрезка, он в worked не входит; 0 — сейчас никто не работает
   office: Office
   shells?: Shell[]
 }

@@ -1,4 +1,4 @@
-// Names and money shared by the page and the floors view.
+// Names, money and durations shared by the page and the floors view.
 // Built-in agents have no desk of their own: they work on the free-lance floor.
 export const GUESTS = {
     'general-purpose': { name: 'Фрилансер', shirt: '#6a6f7a' },
@@ -6,6 +6,17 @@ export const GUESTS = {
     Plan: { name: 'Архитектор', shirt: '#4a4a7a' },
     claude: { name: 'Фрилансер', shirt: '#6a6f7a' },
 };
+// how long, with units: a bare 1:05 could be minutes or hours
+export function span(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60)
+        return `${s}с`;
+    if (s < 3600)
+        return `${Math.floor(s / 60)}м`;
+    return `${Math.floor(s / 3600)}ч ${String(Math.floor(s / 60) % 60).padStart(2, '0')}м`;
+}
+// the total worked by now: the server sends what is closed and when the running stretch began
+export const workedNow = (x, now) => (x.worked ?? 0) + (x.workingSince ? Math.max(0, now - x.workingSince) : 0);
 export function roleKey(type) {
     const i = type.lastIndexOf(':');
     return i === -1 ? type : type.slice(i + 1);

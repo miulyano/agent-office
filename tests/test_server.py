@@ -172,6 +172,130 @@ class TailTest(unittest.TestCase):
                    + line(type='attachment', attachment={'type': 'agent_listing_delta', 'removedTypes': ['a']}))
         self.assertEqual(list(server.Tail(self.path).feed().roster), ['b'])
 
+    def test_work_is_the_turns_not_the_pause_between_them(self):
+        def user(ts, content, **more):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content}, **more)
+        self.write(
+            user('2026-01-01T10:00:00Z', 'почини сборку')
+            + assistant('m1', [('Bash', {'command': 'make'})], ts='2026-01-01T10:01:00Z')
+            + user('2026-01-01T10:03:00Z', [{'type': 'tool_result', 'content': 'ok'}])
+            + assistant('m2', stop='end_turn', ts='2026-01-01T10:04:00Z')
+            # after the turn the journal may gain a note: nobody is working
+            + user('2026-01-01T11:00:00Z', 'напоминание системы', isMeta=True)
+            + user('2026-01-01T12:00:00Z', 'дальше')
+            + assistant('m3', [('Read', {'file_path': 'a'})], ts='2026-01-01T12:02:00Z')
+        )
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False), [
+            [server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:04:00Z')],
+            [server.ms('2026-01-01T12:00:00Z'), server.ms('2026-01-01T12:02:00Z')]])
+
+    def test_interrupted_turn_ends_at_its_last_record(self):
+        def user(ts, content):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content})
+        self.write(user('2026-01-01T10:00:00Z', 'почини')
+                   + assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-01T10:01:00Z')
+                   + user('2026-01-01T12:00:00Z', 'нет, другое'))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False), [
+            [server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:01:00Z')],
+            [server.ms('2026-01-01T12:00:00Z'), server.ms('2026-01-01T12:00:00Z')]])
+
+    def test_turn_in_progress_runs_until_now_only_while_it_is_open(self):
+        def user(ts, content):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content})
+        self.write(user('2026-01-01T10:00:00Z', 'почини') + assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-01T10:01:00Z'))
+        t = server.Tail(self.path).feed()
+        now = server.ms('2026-01-01T10:05:00Z')
+        self.assertEqual(t.worked(now, True), [[server.ms('2026-01-01T10:00:00Z'), now]])
+        self.write(assistant('m2', stop='end_turn', ts='2026-01-01T10:02:00Z'), mode='a')
+        self.assertEqual(t.feed().worked(now, True), [[server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:02:00Z')]])
+
+    def test_agent_called_again_does_not_count_the_pause(self):
+        def user(ts, content, **more):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content}, **more)
+        # an agent's journal has no end_turn, and the second call arrives as a meta record
+        self.write(user('2026-01-01T10:00:00Z', 'ищи')
+                   + assistant('m1', [('Grep', {'pattern': 'x'})], ts='2026-01-01T10:01:00Z')
+                   + user('2026-01-01T10:02:00Z', [{'type': 'tool_result', 'content': 'ok'}])
+                   + user('2026-01-01T18:00:00Z', 'поищи ещё', isMeta=True)
+                   + assistant('m2', [('Grep', {'pattern': 'y'})], ts='2026-01-01T18:01:00Z')
+                   + user('2026-01-01T18:02:00Z', [{'type': 'tool_result', 'content': 'ok'}]))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False), [
+            [server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:02:00Z')],
+            [server.ms('2026-01-01T18:00:00Z'), server.ms('2026-01-01T18:02:00Z')]])
+
+    def test_journal_without_a_prompt_still_counts_its_work(self):
+        self.write(assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-01T10:00:00Z')
+                   + assistant('m2', stop='end_turn', ts='2026-01-01T10:01:00Z'))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False), [[server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:01:00Z')]])
+
+    def test_overlapping_work_counts_once(self):
+        spans = [[10, 110], [60, 160], [310, 410], [320, 330]]
+        self.assertEqual(server.work_clock(spans, 1000), {'worked': 250, 'workingSince': 0})
+        self.assertEqual(server.work_clock([], 1000), {'worked': 0, 'workingSince': 0})
+
+    def test_running_stretch_is_reported_by_its_start(self):
+        self.assertEqual(server.work_clock([[10, 110], [300, 500], [400, 1000]], 1000), {'worked': 100, 'workingSince': 300})
+
+    def test_meta_record_during_a_tool_call_keeps_the_turn(self):
+        def tool(mid, ts):
+            return line(type='assistant', timestamp=ts, cwd='/work/app', message={
+                'id': mid, 'model': 'claude-sonnet-5-5', 'stop_reason': 'tool_use',
+                'content': [{'type': 'tool_use', 'id': 'c1', 'name': 'Bash', 'input': {'command': 'make'}}],
+                'usage': {'input_tokens': 1, 'output_tokens': 1}})
+        self.write(line(type='user', timestamp='2026-01-01T10:00:00Z', message={'role': 'user', 'content': 'собери'})
+                   + tool('m1', '2026-01-01T10:00:10Z')
+                   + line(type='user', timestamp='2026-01-01T10:04:00Z', isMeta=True, message={'role': 'user', 'content': 'заметка'})
+                   + line(type='user', timestamp='2026-01-01T10:05:00Z', message={
+                       'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'c1', 'content': 'ok'}]}))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False), [[server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:05:00Z')]])
+
+    def test_long_tool_call_keeps_running_past_the_quiet_limit(self):
+        ts = '2026-01-01T10:00:00Z'
+        self.write(line(type='user', timestamp=ts, message={'role': 'user', 'content': 'собери'})
+                   + line(type='assistant', timestamp=ts, message={'id': 'm1', 'stop_reason': 'tool_use', 'content': [
+                       {'type': 'tool_use', 'id': 'c1', 'name': 'Agent', 'input': {}}]}))
+        t = server.Tail(self.path).feed()
+        now = server.ms(ts) + (server.LIVE_S + 300) * 1000
+        self.assertEqual(t.worked(now), [[server.ms(ts), now]])
+        lost = server.ms(ts) + (server.BG_LOST_S + 300) * 1000
+        self.assertEqual(t.worked(lost), [[server.ms(ts), server.ms(ts)]])
+
+    def test_records_without_work_do_not_open_a_turn(self):
+        def user(ts, content):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content})
+        ts = '2026-01-01T10:00:%02dZ'
+        for n, note in enumerate(('<local-command-stdout>Set model</local-command-stdout>', '<command-name>/model</command-name>',
+                                  [{'type': 'text', 'text': '[Request interrupted by user]'}])):
+            self.write(user(ts % 0, 'почини') + assistant('m1', stop='end_turn', ts=ts % 1) + user(ts % 2, note))
+            t = server.Tail(self.path).feed()
+            self.assertEqual(t.worked(server.ms(ts % 30)), [[server.ms(ts % 0), server.ms(ts % 1)]], note)
+
+    def test_stale_note_does_not_stretch_later_work(self):
+        def user(ts, content, **more):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content}, **more)
+        self.write(user('2026-01-01T10:00:00Z', 'почини') + assistant('m1', stop='end_turn', ts='2026-01-01T10:01:00Z')
+                   + user('2026-01-01T10:05:00Z', 'заметка', isMeta=True)
+                   + assistant('m2', stop='end_turn', ts='2026-01-01T18:00:00Z'))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False)[-1], [server.ms('2026-01-01T18:00:00Z')] * 2)
+
+    def test_record_without_time_does_not_break_the_journal(self):
+        untimed = line(type='assistant', message={'id': 'm0', 'stop_reason': 'tool_use', 'content': [{'type': 'tool_use', 'name': 'Read', 'input': {}}]})
+        self.write(untimed + assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-01T10:00:00Z')
+                   + line(type='user', timestamp='2026-01-01T10:01:00Z', message={'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ok'}]}))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(0, False), [[server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:01:00Z')]])
+
+    def test_command_without_time_is_not_counted_from_the_epoch(self):
+        t = server.Tail(self.path)
+        t.shells['b1'] = {'id': 'b1', 'name': 'x', 'status': 'completed', 'start': 0, 'end': server.ms('2026-01-01T10:00:00Z')}
+        self.assertEqual(t.worked(0, False), [])
+
     def test_turn_starts_at_the_last_prompt(self):
         def user(ts, content, **more):
             return line(type='user', timestamp=ts, message={'role': 'user', 'content': content}, **more)
@@ -506,6 +630,14 @@ class CodexTailTest(unittest.TestCase):
         self.assertFalse(self.tail(meta() + event('task_started') + event('task_complete')).busy)
         self.assertFalse(self.tail(meta() + event('task_started') + event('turn_aborted')).busy)
 
+    def test_work_is_the_tasks_not_the_pause_between_them(self):
+        t = self.tail(meta() + event('task_started', ts='2026-01-01T10:00:00.000Z') + event('task_complete', ts='2026-01-01T10:01:00.000Z')
+                      + usage_record(ts='2026-01-01T10:30:00.000Z')
+                      + event('task_started', ts='2026-01-02T09:00:00.000Z') + usage_record(ts='2026-01-02T09:02:00.000Z'))
+        self.assertEqual(t.worked(0, False), [
+            [server.ms('2026-01-01T10:00:00.000Z'), server.ms('2026-01-01T10:01:00.000Z')],
+            [server.ms('2026-01-02T09:00:00.000Z'), server.ms('2026-01-02T09:02:00.000Z')]])
+
     def test_turn_starts_at_the_last_task(self):
         t = self.tail(meta() + event('task_started', ts='2026-01-01T10:00:00.000Z') + event('task_complete', ts='2026-01-01T10:01:00.000Z')
                       + event('task_started', ts='2026-01-02T09:00:00.000Z'))
@@ -596,6 +728,16 @@ class CodexSessionsTest(unittest.TestCase):
         [a] = st['agents']
         self.assertEqual((a['type'], a['model'], a['isWorking']), ('guardian', 'codex-auto-review', True))
         self.assertEqual([d['name'] for z in st['office']['zones'] for d in z['desks']], ['Главный', 'Контролёр'])
+
+    def test_work_time_joins_a_session_and_its_helpers(self):
+        now = time.time()
+        self.write(THREAD, meta() + event('task_started', iso(now - 300)) + event('task_complete', iso(now - 200)))
+        self.write('child', meta(thread='child', source={'subagent': {'other': 'guardian'}}, parent_thread_id=THREAD)
+                   + event('task_started', iso(now - 250)) + event('task_complete', iso(now - 100)))
+        self.assertEqual(server.sessions()[0]['worked'], 200000)
+        st = server.state(THREAD)
+        self.assertEqual((st['worked'], st['workingSince']), (200000, 0))
+        self.assertNotIn('spans', st['agents'][0])
 
     def test_codex_office_has_its_own_sign_and_no_generation(self):
         self.write(THREAD, meta() + context(ts=self.now()) + event('task_started', self.now()))
@@ -1897,6 +2039,77 @@ class BackgroundShellTest(unittest.TestCase):
     def shells(self, sid='s1'):
         return server.state(sid)['shells']
 
+    def worked(self, sid='s1'):
+        return server.state(sid)['worked']
+
+    def agent(self, sid, name, *rows, finished=True):
+        sub = os.path.join(self.pdir, sid, 'subagents')
+        os.makedirs(sub, exist_ok=True)
+        with open(os.path.join(sub, 'agent-%s.jsonl' % name), 'w') as f:
+            f.writelines(rows)
+        with open(os.path.join(sub, 'agent-%s.meta.json' % name), 'w') as f:
+            json.dump({'agentType': 'Explore', 'description': 'ищет', 'finished': finished}, f)
+
+    def test_work_time_joins_head_agents_and_background_commands(self):
+        self.journal('s1',
+                     self.asked(1000), self.stopped(900),
+                     # the command outlives the turn that started it
+                     self.asked(500), self.called('b1', 500), self.in_background('b1', 'bg1', 499), self.stopped(498),
+                     self.queued('bg1', 400), self.told('bg1', 400))
+        self.agent('s1', 'a1', self.asked(950), self.stopped(850))
+        self.assertEqual(self.worked(), 250000)  # 1000→850 and 500→400; the agent's overlap counts once
+        [s] = server.sessions()
+        self.assertEqual(s['worked'], 250000)
+
+    def test_agent_without_a_head_turn_adds_its_own_time(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(800), self.stopped(700))
+        self.assertEqual(self.worked(), 200000)
+
+    def test_running_background_command_counts_until_now(self):
+        self.journal('s1', self.asked(300), self.called('b1', 300), self.in_background('b1', 'bg1', 299), self.stopped(298), age=298)
+        st = server.state('s1')
+        self.assertEqual((st['worked'], st['workingSince']), (0, server.ms(self.ago(300))))
+
+    def test_state_does_not_change_while_time_just_passes(self):
+        self.journal('s1', self.asked(300), self.called('b1', 300), self.in_background('b1', 'bg1', 299), self.stopped(298), age=298)
+        first = json.dumps(server.state('s1'), sort_keys=True)
+        with mock.patch.object(server.time, 'time', return_value=time.time() + 5):
+            self.assertEqual(json.dumps(server.state('s1'), sort_keys=True), first)
+
+    def test_lost_background_command_stops_counting(self):
+        age = server.BG_LOST_S + 100
+        self.journal('s1', self.asked(age), self.called('b1', age), self.in_background('b1', 'bg1', age - 1), self.stopped(age - 2))
+        self.assertLess(self.worked(), 10000)
+
+    def test_lost_background_command_keeps_the_time_the_session_saw(self):
+        age = server.BG_LOST_S + 2000
+        self.journal('s1', self.asked(age), self.called('b1', age), self.in_background('b1', 'bg1', age - 1), self.stopped(age - 2),
+                     self.asked(age - 1000), self.stopped(age - 1001))
+        self.assertEqual(self.worked(), 1001000)
+
+    def test_finished_command_counts_after_it_left_the_server_room(self):
+        age = server.BG_DONE_S + 1000
+        self.journal('s1', self.asked(age), self.called('b1', age), self.in_background('b1', 'bg1', age - 1), self.stopped(age - 2), self.queued('bg1', age - 500))
+        self.assertEqual(self.shells(), [])
+        self.assertEqual(self.worked(), 500000)
+
+    def test_quiet_session_stops_counting_at_its_last_record(self):
+        thinking = line(type='assistant', timestamp=self.ago(server.LIVE_S + 100), cwd='/work/app', message={
+            'id': 'm', 'model': 'claude-sonnet-5-5', 'content': [{'type': 'text', 'text': 'думаю'}]})
+        self.journal('s1', self.asked(server.LIVE_S + 200), thinking, age=server.LIVE_S + 100)
+        self.assertEqual(self.worked(), 100000)
+
+    def test_finished_agent_stops_counting_at_once(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(100), self.called('c1', 50))
+        self.assertEqual(self.worked(), 150000)
+
+    def test_agent_clock_details_stay_on_the_server(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(800), self.stopped(700))
+        self.assertNotIn('spans', server.state('s1')['agents'][0])
+
     def test_running_command_counts_from_the_call_not_from_the_move_to_background(self):
         self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 80))
         self.assertEqual(self.shells(), [{'id': 'b1', 'name': 'Сборка рилса', 'session': 1, 'status': 'running',
@@ -2047,6 +2260,18 @@ class TaskTest(unittest.TestCase):
     def alive(self, pid, sid, host):
         with open(os.path.join(server.SESSIONS_DIR, '%d.json' % pid), 'w') as f:
             json.dump({'pid': pid, 'sessionId': sid, 'hostSessionId': host}, f)
+
+    def test_work_time_of_a_task_joins_all_its_sessions(self):
+        self.journal('root', '/work/app', 'сделай ' + LINKED)
+        self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, ts='2026-01-01T10:05:00Z')
+        self.alive(7, 'kid', 'local_h1')
+        for sid, cwd, ts in (('root', '/work/app', '2026-01-01T10:10:00Z'), ('kid', '/work/app/.claude/worktrees/x', '2026-01-01T10:20:00Z')):
+            with open(os.path.join(server.PROJECTS, re.sub(r'[^A-Za-z0-9]', '-', cwd), sid + '.jsonl'), 'a') as f:
+                f.write(assistant(sid + '-end', stop='end_turn', ts=ts))
+        self.assertEqual(server.state('root')['worked'], 20 * 60000)
+        self.assertEqual(server.state('root')['workingSince'], 0)
+        self.assertEqual(server.state('kid')['worked'], 15 * 60000)
+        self.assertEqual({s['id']: s['worked'] for s in server.sessions()}, {'root': 10 * 60000, 'kid': 15 * 60000})
 
     def test_child_agents_sit_in_the_root_office(self):
         self.journal('root', '/work/app', 'сделай ' + LINKED, agent='a1')

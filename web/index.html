@@ -155,7 +155,7 @@
 </aside>
 <script type="module">
 // метка в адресе: после правок office.js браузер не держит старый модуль
-const { roleName, money } = await import('./office.js?' + Date.now())
+const { roleName, money, span, workedNow } = await import('./office.js?' + Date.now())
 const { mountFloors, OFFICES, TIME_OPTIONS } = await import('./floors.js?' + Date.now())
 const { funnyName, pngOf } = await import('./shot.js?' + Date.now())
 
@@ -262,10 +262,12 @@ function drawList() {
     const agents = s.agents ? ` · агентов ${s.agents}` : ''
     const usd = s.cost ? ` · <span class="usd">${money(s.cost)}</span>` : ''
     const fon = s.shells ? ` · <span class="fon">фон ${s.shells}</span>` : ''
+    // минуты, а не секунды: строка меняется редко, и клик не попадает в заменённую кнопку
+    const worked = workedNow(s, Date.now()), time = worked >= 60000 ? ` · время ${span(worked)}` : ''
     const branch = s.kid && s.branch ? ` · <span class="br">${esc(s.branch)}</span>` : ''
     return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}">
       <div class="t"><span class="d ${cls}"></span><span>${s.kid ? '↳ ' : ''}${esc(s.title)}</span></div>
-      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${agents}${fon}${usd}</div></button>`
+      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${time}${agents}${fon}${usd}</div></button>`
   }).join('')
   // не трогать список без перемен: иначе клик попадает в уже заменённую кнопку
   if (html !== list.dataset.html) {
@@ -469,7 +471,8 @@ async function pollState() {
     const working = live.agents.filter(a => a.isWorking).length + (heads.length ? heads.filter(h => h.isBusy).length : (live.producer.isBusy ? 1 : 0))
     total.textContent = money(live.cost)
     total.title = `${roleName('main', live.office)} ${money(live.producer.cost)}, агенты ${money(live.cost - live.producer.cost)}`
-    status.textContent = !s ? '' : s.isLive ? `${s.project} · в работе ${working}` : `${s.project} · последняя активность ${ago(s.at)}`
+    const worked = workedNow(live, Date.now()), time = worked ? ` · время ${span(worked)}` : ''
+    status.textContent = !s ? '' : (s.isLive ? `${s.project} · в работе ${working}` : `${s.project} · последняя активность ${ago(s.at)}`) + time
   } catch {}
 }
 

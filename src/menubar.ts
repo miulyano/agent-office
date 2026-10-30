@@ -2,7 +2,7 @@
 // Lives on the server like the office itself, so a style change shows up the
 // next time the popover opens, without rebuilding the app.
 
-import { money } from './office.js'
+import { money, span as lasted, workedNow } from './office.js'
 
 type Provider = 'claude' | 'codex'
 
@@ -14,6 +14,8 @@ type Session = {
   at: number
   isLive: boolean
   working: number
+  worked: number
+  workingSince: number
   agents: number
   cost: number
   today: number
@@ -194,7 +196,9 @@ function renderState() {
 
 // ── Sessions tab ──
 function sessionRow(s: Session, lamp: boolean): string {
-  const state = s.working > 0 ? `в работе: ${s.working}` : s.isLive ? `ждёт · ${ago(s.at)}` : ago(s.at)
+  // время идёт первым: длинное состояние обрезается справа
+  const worked = workedNow(s, Date.now())
+  const state = (worked ? `время ${lasted(worked)} · ` : '') + (s.working > 0 ? `в работе: ${s.working}` : s.isLive ? `ждёт · ${ago(s.at)}` : ago(s.at))
   // главное — сегодняшнее; полная цена сессии, если она шла и раньше
   const money2 = !s.today
     ? `<div class="a">${money(s.cost)}</div><div class="b">до сегодня</div>`

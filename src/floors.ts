@@ -4,7 +4,7 @@
 // Agents move only inside their own cell, along their floor's corridor and in the lift.
 
 import type { Agent, Head, OfficeDesk, Shell, Studio } from './types'
-import { GUESTS, deskName, deskOf, money } from './office.js'
+import { GUESTS, deskName, deskOf, money, span, workedNow } from './office.js'
 
 // ── data → people ──────────────────────────────────────────────────────────
 type Grade = 'intern' | 'middle' | 'senior' | 'lead'
@@ -120,13 +120,6 @@ type Pose = 'sit' | 'type' | 'think' | 'drink' | 'phone' | 'sleep' | 'walk' | 's
 type Doing = { place: Place; pose: Pose; icon: string; text: string; work: boolean; time?: string }
 const TIME_COLOR = '#bfe3ff'   // the clock and its figure: apart from the status text and the model's colour
 
-// how long, with units: a bare 1:05 could be minutes or hours
-function span(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return `${s}с`
-  if (s < 3600) return `${Math.floor(s / 60)}м`
-  return `${Math.floor(s / 3600)}ч ${String(Math.floor(s / 60) % 60).padStart(2, '0')}м`
-}
 const clockOf = (at: number) => new Date(at).toTimeString().slice(0, 5)
 
 const ICON: Record<string, string> = { read: 'read', edit: 'edit', write: 'write', grep: 'grep', bash: 'bash', web: 'web', agent: 'phone', skill: 'skill', other: 'tool' }
@@ -631,6 +624,12 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     const working = st.agents.filter(a => a.isWorking).length + heads.filter(h => h.isBusy).length
     labels.push({ x: width / 2, y: 7.5, text: st.office.title || 'AGENT OFFICE', px: 5, color: st.office.accent ?? GOLD, display: true, stroke: false })
     labels.push({ x: width / 2, y: 18, text: `в работе ${working} · агентов ${st.agents.length}`, px: 4.2, color: '#ffffff', w: 600 })
+    // how long anyone worked at the left edge: joined across the head, agents and background commands
+    const worked = workedNow(st, now)
+    if (worked) {
+      glyph(c, 'clock', xL + 2, 18.3, TIME_COLOR)
+      labels.push({ x: xL + 9, y: 18, text: span(worked), px: 4.2, color: TIME_COLOR, align: 'left', w: 600 })
+    }
     // the session's total at the right edge, after a banknote
     const total = money(st.cost)
     banknote(c, xR - 3 - total.length * 2.6 - 9, 18.3)

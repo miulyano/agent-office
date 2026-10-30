@@ -1,7 +1,7 @@
 // Menu bar popover: sessions and spend stats, in the office's palette.
 // Lives on the server like the office itself, so a style change shows up the
 // next time the popover opens, without rebuilding the app.
-import { money } from './office.js';
+import { money, span as lasted, workedNow } from './office.js';
 const bridge = window.webkit?.messageHandlers?.ao;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => s.replace(/[&<>"]/g, c => `&${{ '&': 'amp', '<': 'lt', '>': 'gt', '"': 'quot' }[c]};`);
@@ -165,7 +165,9 @@ function renderState() {
 }
 // ── Sessions tab ──
 function sessionRow(s, lamp) {
-    const state = s.working > 0 ? `в работе: ${s.working}` : s.isLive ? `ждёт · ${ago(s.at)}` : ago(s.at);
+    // время идёт первым: длинное состояние обрезается справа
+    const worked = workedNow(s, Date.now());
+    const state = (worked ? `время ${lasted(worked)} · ` : '') + (s.working > 0 ? `в работе: ${s.working}` : s.isLive ? `ждёт · ${ago(s.at)}` : ago(s.at));
     // главное — сегодняшнее; полная цена сессии, если она шла и раньше
     const money2 = !s.today
         ? `<div class="a">${money(s.cost)}</div><div class="b">до сегодня</div>`
