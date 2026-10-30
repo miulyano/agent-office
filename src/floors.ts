@@ -776,23 +776,22 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
           // the model's name only where the cell is wide — a narrow desk shows it by the outfit
           const px = geo.wide ? 3.4 : 3.1
           let lx = geo.x + 2
+          // fixed slots, not measured text: the icon and its figure keep the same gap at any scale
           if (d.time && !moving) {
             glyph(c, 'clock', lx, iy + 7.8, work ? TIME_COLOR : DIM)
             labels.push({ x: lx + 7, y: iy + 7.5, text: d.time, px, color: work ? TIME_COLOR : DIM, align: 'left', w: 600 })
-            lx += 7 + d.time.length * (px * 0.7) + 4
+            lx += 22
           }
           const cost = money(p.boss ? (p.head ?? st.producer).cost : p.agent!.cost)
           if (geo.wide) {
             // a wide cell reads left to right: clock, model, banknote and the money
-            labels.push({ x: lx, y: iy + 7.3, text: p.model, px, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : DIM, align: 'left', w: 600 })
-            lx += p.model.length * (px * 0.7) + 5
-            banknote(c, lx, iy + 7.6)
-            labels.push({ x: lx + 9, y: iy + 7.5, text: cost, px, color: GOLD, align: 'left', w: 600 })
+            labels.push({ x: lx, y: iy + 7.3, text: p.model, px, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : DIM, align: 'left', w: 600, maxw: 20 })
+            lx += 24
           } else {
-            // a narrow cell: the banknote before its figure at the right edge, as the clock before its time at the left
-            banknote(c, geo.x + cwid - 3 - cost.length * (px * 0.7) - 9, iy + 7.6)
-            labels.push({ x: geo.x + cwid - 2, y: iy + 7.5, text: cost, px, color: GOLD, align: 'right', w: 600 })
+            lx = geo.x + cwid - 24
           }
+          banknote(c, lx, iy + 7.6)
+          labels.push({ x: lx + 9, y: iy + 7.5, text: cost, px, color: GOLD, align: 'left', w: 600 })
         }
         // salary drips in: while working, coins fly from the screen to the banknote
         if (work) {
