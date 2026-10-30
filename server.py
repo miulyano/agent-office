@@ -1926,8 +1926,8 @@ def head_of(t, sid, live, busy):
 
 def room(tails, agents, office, heads):
     """Состояние офиса задачи: руководители её сессий, агенты, общий журнал.
-    Когда сессий несколько, записи помечены номером сессии: ① корень, ② первая порождённая."""
-    mark = (lambda i: MARKS[min(i, len(MARKS)) - 1] + ' ') if len(heads) > 1 else (lambda i: '')
+    Когда сессий несколько, записи порождённых помечены их номером: ② первая порождённая; корень без метки."""
+    mark = (lambda i: MARKS[min(i, len(MARKS)) - 1] + ' ' if i > 1 else '') if len(heads) > 1 else (lambda i: '')
     log = []
     for i, t in enumerate(tails, 1):
         log += [(at, 'producer', mark(i) + text) for at, text in t.events]

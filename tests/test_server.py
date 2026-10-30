@@ -1810,7 +1810,7 @@ class TaskTest(unittest.TestCase):
         self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, agent='a2')
         self.alive(7, 'kid', 'local_h1')
         log = server.state('root')['log']
-        self.assertEqual({l['text'][0] for l in log}, {'①', '②'}, log)
+        self.assertEqual({l['text'][0] for l in log}, {'$', 'в', 'и', '②'}, log)  # корень без метки, порождённая с ②
 
     def test_single_session_log_has_no_marks(self):
         self.journal('root', '/work/app', 'сделай', agent='a1')

@@ -8,8 +8,8 @@ const HAIRS = ['#2b1d14', '#1a1a1a', '#6b4a2b', '#c9a227', '#9a9a9a', '#8a5a2b',
 const CAPS = ['#d06a2a', '#2f7a5a', '#c03040', '#3a6ab0'];
 const INK = '#1a1a22', GOLD = '#f0c040';
 const MARKS = '①②③④⑤⑥⑦⑧⑨';
-// a task of several sessions marks everyone with their session's number, as the server does in the log
-const markOf = (st, n) => (st.sessions?.length ?? 1) > 1 ? MARKS[Math.min(n, MARKS.length) - 1] + ' ' : '';
+// in a task of several sessions, people from a started session wear its number; the root's own go unmarked, as in the server's log
+const markOf = (st, n) => n > 1 && (st.sessions?.length ?? 1) > 1 ? MARKS[Math.min(n, MARKS.length) - 1] + ' ' : '';
 // the model is the grade: Haiku in a cap, Sonnet in a hoodie, Opus in a suit, Fable in a dark suit with glasses;
 // Codex models take the same grades by their tier
 const MODEL_GRADE = [['haiku', 'intern', 'Haiku'], ['sonnet', 'middle', 'Sonnet'], ['opus', 'senior', 'Opus'], ['fable', 'lead', 'Fable'],
