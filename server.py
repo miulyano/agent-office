@@ -46,7 +46,8 @@ AGENT_IDLE_S = 10 * 60   # агент без finished и без записей �
 BG_DONE_S = 2 * 60       # столько завершённая фоновая команда стоит в серверной
 BG_FAILED_S = 10 * 60    # упавшая дольше: её надо успеть заметить
 BG_LOST_S = 3 * 3600     # команда без итога дольше — потеряна: журнал не пишет, что сессию закрыли
-NOT_WORK = ('[Request interrupted', '<command-name>', '<command-message>', '<local-command-')
+INTERRUPTED = '[Request interrupted'
+NOT_WORK = (INTERRUPTED, '<command-name>', '<command-message>', '<local-command-')  # за такими записями работы нет: для часов это не запрос
 LOG_MAX = 80
 # $ за 1M токенов: вход, выход, чтение кэша. Цены меняются — правьте здесь.
 PRICES = {
@@ -322,10 +323,8 @@ def has_tool_result(content):
     return isinstance(content, list) and any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content)
 
 
-def not_work(content):
-    """Запись без работы за ней: прерывание и локальные команды. Запросом для часов они не считаются."""
-    text = content if isinstance(content, str) else next((b.get('text', '') for b in content or [] if isinstance(b, dict) and b.get('type') == 'text'), '')
-    return text.lstrip().startswith(NOT_WORK)
+def first_text(content):
+    return (content if isinstance(content, str) else next((b.get('text', '') for b in content or [] if isinstance(b, dict) and b.get('type') == 'text'), '')).lstrip()
 
 
 def shell_shown(shell, now_ms):
@@ -484,7 +483,10 @@ class Tail:
             result = has_tool_result(content)
             if not d.get('isMeta') and not d.get('isCompactSummary') and not result:
                 self.turn = at or self.turn
-            if d.get('isMeta') or not_work(content):
+            text = first_text(content)
+            if text.startswith(INTERRUPTED):
+                self.calling_tools.clear()  # результата прерванного вызова можно не дождаться
+            if d.get('isMeta') or text.startswith(NOT_WORK):
                 # в журнале агента нет end_turn, а повторный вызов приходит такой записью: пауза до неё не работа
                 if not self.calling_tools:
                     self.open, self.called = False, at
@@ -561,6 +563,15 @@ class Tail:
             del self.daily[old]
 
 
+def between_tasks(kind, p):
+    """Записи Codex, которые бывают и вне задачи: при возобновлении и перед новой."""
+    if kind == 'event_msg':
+        return p.get('type') in ('task_started', 'thread_settings_applied', 'token_count')
+    if kind == 'response_item':
+        return p.get('role') in ('developer', 'user') or p.get('type') == 'compaction'
+    return kind in ('session_meta', 'turn_context', 'world_state', 'compacted')
+
+
 class CodexTail(Tail):
     """Журнал сессии Codex: поля те же, что у Tail, записи другие."""
 
@@ -578,7 +589,8 @@ class CodexTail(Tail):
         if at:
             self.first = self.first or at
             self.last = max(self.last, at)
-            if self.open:
+            # задача могла оборваться без task_complete: тянем её только записями самой работы
+            if self.open and not between_tasks(kind, p):
                 self.work(at)
         usage = codex_usage(self.meter, d)
         if kind == 'session_meta':
@@ -596,6 +608,8 @@ class CodexTail(Tail):
             self.cwd = p.get('cwd') or self.cwd
         elif kind == 'response_item' and p.get('type') in ('custom_tool_call', 'function_call'):
             self.calling(p, at)
+        elif kind == 'response_item' and p.get('type') in ('custom_tool_call_output', 'function_call_output'):
+            self.calling_tools.pop(p.get('call_id'), None)
         elif kind == 'event_msg':
             event = p.get('type')
             if event == 'task_started':
@@ -605,11 +619,14 @@ class CodexTail(Tail):
                 self.activity, self.activity_at = 'думает', at
             elif event in ('task_complete', 'turn_aborted'):
                 self.busy = self.open = False
+                self.calling_tools.clear()  # у оборванного вызова результата не будет
             elif event == 'item_completed':
                 self.finished(p.get('item') or {}, at)
 
     def calling(self, p, at):
         """Вызов только начался: в журнале он виден сразу, а итог появится, когда закончится."""
+        if p.get('call_id'):
+            self.calling_tools[p['call_id']] = at
         text = str(p.get('input') or p.get('arguments') or '')
         name = p.get('name') or ''
         inner = CODEX_TOOL.search(text)
@@ -2070,7 +2087,7 @@ def head_of(t, sid, live, busy):
             'at': t.activity_at, 'calls': t.calls, 'cost': round(t.cost, 4), 'model': t.model, 'tool': t.tool, 'branch': t.branch, 'since': t.turn or t.first}
 
 
-def room(tails, agents, office, heads):
+def room(tails, agents, office, heads, now_ms):
     """Состояние офиса задачи: руководители её сессий, агенты, общий журнал.
     Когда сессий несколько, записи порождённых помечены их номером: ② первая порождённая; корень без метки."""
     mark = (lambda i: MARKS[min(i, len(MARKS)) - 1] + ' ' if i > 1 else '') if len(heads) > 1 else (lambda i: '')
@@ -2085,7 +2102,6 @@ def room(tails, agents, office, heads):
             log.append((a['endedAt'], a['type'], m + 'сдал работу'))
     log.sort(key=lambda x: x[0])
     head = heads[0]
-    now_ms = time.time() * 1000
     clock = clock_of(tails, agents, now_ms)
     for a in agents:
         del a['events'], a['spans']
@@ -2124,7 +2140,7 @@ def state(sid):
             roster.update(t.roster)
             chain.append(t)
         agents.sort(key=lambda a: a['startedAt'])
-        return room(chain, agents, office_for(chain[0], [a['type'] for a in agents], roster), heads)
+        return room(chain, agents, office_for(chain[0], [a['type'] for a in agents], roster), heads, now * 1000)
     mains, kids = codex_threads(now)
     t = mains.get(sid)
     if t is None:
@@ -2133,7 +2149,7 @@ def state(sid):
     for a in agents:
         a['session'] = 1
     live = now * 1000 - t.last < LIVE_S * 1000
-    return room([t], agents, codex_office(t, agents), [head_of(t, sid, live, t.busy and live)])
+    return room([t], agents, codex_office(t, agents), [head_of(t, sid, live, t.busy and live)], now * 1000)
 
 
 def shot_name(raw):

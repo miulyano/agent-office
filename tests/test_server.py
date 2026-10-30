@@ -254,6 +254,17 @@ class TailTest(unittest.TestCase):
         t = server.Tail(self.path).feed()
         self.assertEqual(t.worked(0, False), [[server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:05:00Z')]])
 
+    def test_interrupt_ends_the_turn_even_without_a_tool_result(self):
+        ts = '2026-01-01T10:00:00Z'
+        self.write(line(type='user', timestamp=ts, message={'role': 'user', 'content': 'собери'})
+                   + line(type='assistant', timestamp='2026-01-01T10:01:00Z', message={'id': 'm1', 'stop_reason': 'tool_use', 'content': [
+                       {'type': 'tool_use', 'id': 'c1', 'name': 'Bash', 'input': {'command': 'make'}}]})
+                   + line(type='user', timestamp='2026-01-01T10:02:00Z', message={'role': 'user', 'content': [
+                       {'type': 'text', 'text': '[Request interrupted by user for tool use]'}]}))
+        t = server.Tail(self.path).feed()
+        now = server.ms(ts) + (server.LIVE_S + 300) * 1000
+        self.assertEqual(t.worked(now), [[server.ms(ts), server.ms('2026-01-01T10:01:00Z')]])
+
     def test_long_tool_call_keeps_running_past_the_quiet_limit(self):
         ts = '2026-01-01T10:00:00Z'
         self.write(line(type='user', timestamp=ts, message={'role': 'user', 'content': 'собери'})
@@ -637,6 +648,42 @@ class CodexTailTest(unittest.TestCase):
         self.assertEqual(t.worked(0, False), [
             [server.ms('2026-01-01T10:00:00.000Z'), server.ms('2026-01-01T10:01:00.000Z')],
             [server.ms('2026-01-02T09:00:00.000Z'), server.ms('2026-01-02T09:02:00.000Z')]])
+
+    def test_abandoned_task_does_not_stretch_into_the_next(self):
+        t = self.tail(meta() + event('task_started', ts='2026-01-01T10:00:00.000Z') + usage_record(ts='2026-01-01T10:01:00.000Z')
+                      + event('task_started', ts='2026-01-01T12:00:00.000Z') + usage_record(ts='2026-01-01T12:01:00.000Z'))
+        self.assertEqual(t.worked(0, False), [
+            [server.ms('2026-01-01T10:00:00.000Z'), server.ms('2026-01-01T10:01:00.000Z')],
+            [server.ms('2026-01-01T12:00:00.000Z'), server.ms('2026-01-01T12:01:00.000Z')]])
+
+    def test_resumed_session_does_not_stretch_an_abandoned_task(self):
+        back = '2026-01-01T12:00:00.000Z'
+        t = self.tail(meta() + event('task_started', ts='2026-01-01T10:00:00.000Z') + usage_record(ts='2026-01-01T10:01:00.000Z')
+                      # all of these come between tasks: none of them means the old one is still going
+                      + rec('session_meta', {'id': THREAD}, back) + rec('world_state', {}, back) + rec('compacted', {}, back)
+                      + rec('turn_context', {'model': 'gpt-5.6-sol'}, back) + event('thread_settings_applied', back) + event('token_count', back)
+                      + rec('response_item', {'type': 'message', 'role': 'developer', 'content': []}, back)
+                      + rec('response_item', {'type': 'compaction'}, back)
+                      + event('task_started', ts='2026-01-01T12:00:30.000Z') + usage_record(ts='2026-01-01T12:01:00.000Z'))
+        self.assertEqual(t.worked(0, False), [
+            [server.ms('2026-01-01T10:00:00.000Z'), server.ms('2026-01-01T10:01:00.000Z')],
+            [server.ms('2026-01-01T12:00:30.000Z'), server.ms('2026-01-01T12:01:00.000Z')]])
+
+    def test_long_tool_call_keeps_running_until_its_output(self):
+        ts = '2026-01-01T10:00:00.000Z'
+        for call, output in (('custom_tool_call', 'custom_tool_call_output'), ('function_call', 'function_call_output')):
+            calling = meta() + event('task_started', ts=ts) + rec('response_item', {'type': call, 'call_id': 'c1', 'name': 'exec', 'input': ''}, ts)
+            t = self.tail(calling)
+            now = server.ms(ts) + (server.LIVE_S + 300) * 1000
+            self.assertEqual(t.worked(now), [[server.ms(ts), now]], call)
+            t = self.tail(calling + rec('response_item', {'type': output, 'call_id': 'c1', 'output': 'ok'}, '2026-01-01T10:01:00.000Z'))
+            self.assertEqual(t.worked(now), [[server.ms(ts), server.ms('2026-01-01T10:01:00.000Z')]], output)
+
+    def test_finished_task_forgets_its_calls(self):
+        ts = '2026-01-01T10:00:00.000Z'
+        t = self.tail(meta() + event('task_started', ts=ts) + rec('response_item', {'type': 'function_call', 'call_id': 'c1', 'name': 'exec', 'arguments': ''}, ts)
+                      + event('turn_aborted', ts='2026-01-01T10:01:00.000Z') + event('task_started', ts='2026-01-01T10:02:00.000Z'))
+        self.assertEqual(t.calling_tools, {})
 
     def test_turn_starts_at_the_last_task(self):
         t = self.tail(meta() + event('task_started', ts='2026-01-01T10:00:00.000Z') + event('task_complete', ts='2026-01-01T10:01:00.000Z')
@@ -2076,6 +2123,14 @@ class BackgroundShellTest(unittest.TestCase):
         first = json.dumps(server.state('s1'), sort_keys=True)
         with mock.patch.object(server.time, 'time', return_value=time.time() + 5):
             self.assertEqual(json.dumps(server.state('s1'), sort_keys=True), first)
+
+    def test_only_an_agent_at_work_keeps_the_clock_ticking(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(100), self.called('c1', 50), finished=False)
+        first = server.state('s1')
+        self.assertEqual((first['worked'], first['workingSince']), (100000, server.ms(self.ago(100))))
+        with mock.patch.object(server.time, 'time', return_value=time.time() + 5):
+            self.assertEqual(json.dumps(server.state('s1'), sort_keys=True), json.dumps(first, sort_keys=True))
 
     def test_lost_background_command_stops_counting(self):
         age = server.BG_LOST_S + 100
