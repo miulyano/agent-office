@@ -107,10 +107,14 @@ function building(st, now) {
     return { boss, heads: heads.slice(1).map((h, i) => chief(h, i + 1)), floors: floors.filter(f => f.cells.length || f.home) };
 }
 const TIME_COLOR = '#bfe3ff'; // the clock and its figure: apart from the status text and the model's colour
-// how long: m:ss under an hour, h:mm after
+// how long, with units: a bare 1:05 could be minutes or hours
 function span(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
-    return s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}`;
+    if (s < 60)
+        return `${s}с`;
+    if (s < 3600)
+        return `${Math.floor(s / 60)}м`;
+    return `${Math.floor(s / 3600)}ч ${String(Math.floor(s / 60) % 60).padStart(2, '0')}м`;
 }
 const clockOf = (at) => new Date(at).toTimeString().slice(0, 5);
 const ICON = { read: 'read', edit: 'edit', write: 'write', grep: 'grep', bash: 'bash', web: 'web', agent: 'phone', skill: 'skill', other: 'tool' };
@@ -121,7 +125,7 @@ function busy(tool, text) {
 function doing(p, st, now) {
     if (p.boss) {
         const pr = p.head ?? st.producer;
-        // the session's clock runs while its head is busy
+        // the clock of the current request: it runs while the head is busy
         const since = p.head?.since ?? st.since;
         const timed = (d) => ({ ...d, time: since ? span(now - since) : undefined });
         if (pr.isBusy && now - pr.at < THINK)
@@ -1099,7 +1103,7 @@ export function mountFloors(scene, overlay, onError) {
                     if (d.time && !moving) {
                         glyph(c, 'clock', lx, iy + 7.8, work ? TIME_COLOR : DIM);
                         labels.push({ x: lx + 7, y: iy + 7.5, text: d.time, px, color: work ? TIME_COLOR : DIM, align: 'left', w: 600 });
-                        lx += 22;
+                        lx += 25;
                     }
                     const cost = money(p.boss ? (p.head ?? st.producer).cost : p.agent.cost);
                     if (geo.wide) {

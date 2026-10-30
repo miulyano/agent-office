@@ -311,6 +311,10 @@ CODEX_TOOL = re.compile(r'tools\.(\w+)\s*\(')
 CODEX_CALLS = {'apply_patch': ('Edit', {}), 'view_image': ('Read', {}), 'web__run': ('WebSearch', {})}
 
 
+def has_tool_result(content):
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get('type') == 'tool_result' for b in content)
+
+
 class Tail:
     """Журнал, дочитываемый с места остановки: вызовы, последнее действие, хвост."""
 
@@ -320,6 +324,7 @@ class Tail:
         self.calls = 0
         self.first = 0
         self.last = 0          # время последней записи
+        self.turn = 0          # начало текущего хода: последний запрос
         self.activity = ''
         self.activity_at = 0
         self.tool = ''         # вид последнего инструмента, см. tool_kind
@@ -399,6 +404,8 @@ class Tail:
             self.note_links(content)
             if isinstance(content, str) and not d.get('isMeta'):
                 self.activity, self.activity_at = 'думает', at
+            if not d.get('isMeta') and not d.get('isCompactSummary') and not has_tool_result(content):
+                self.turn = at or self.turn
             return
         mid = msg.get('id')
         self.model = msg.get('model') or self.model
@@ -472,6 +479,7 @@ class CodexTail(Tail):
             event = p.get('type')
             if event == 'task_started':
                 self.busy = True
+                self.turn = at or self.turn
                 self.activity, self.activity_at = 'думает', at
             elif event in ('task_complete', 'turn_aborted'):
                 self.busy = False
@@ -1931,7 +1939,7 @@ def find_tail(sid):
 def head_of(t, sid, live, busy):
     """Руководитель сессии: то же, что producer, плюс кто он."""
     return {'id': sid, 'title': title_of(t, sid), 'isLive': live, 'isBusy': busy, 'activity': t.activity if busy else '',
-            'at': t.activity_at, 'calls': t.calls, 'cost': round(t.cost, 4), 'model': t.model, 'tool': t.tool, 'branch': t.branch, 'since': t.first}
+            'at': t.activity_at, 'calls': t.calls, 'cost': round(t.cost, 4), 'model': t.model, 'tool': t.tool, 'branch': t.branch, 'since': t.turn or t.first}
 
 
 def room(tails, agents, office, heads):
@@ -1958,7 +1966,7 @@ def room(tails, agents, office, heads):
         'cost': round(sum(h['cost'] for h in heads) + sum(a['cost'] for a in agents), 4),
         'office': office,
         'log': [{'at': at, 'who': who, 'text': clip(text)} for at, who, text in log[-LOG_MAX:]],
-        'since': tails[0].first,
+        'since': head['since'],
     }
 
 

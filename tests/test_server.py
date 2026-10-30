@@ -138,6 +138,24 @@ class TailTest(unittest.TestCase):
                    + line(type='attachment', attachment={'type': 'agent_listing_delta', 'removedTypes': ['a']}))
         self.assertEqual(list(server.Tail(self.path).feed().roster), ['b'])
 
+    def test_turn_starts_at_the_last_prompt(self):
+        def user(ts, content, **more):
+            return line(type='user', timestamp=ts, message={'role': 'user', 'content': content}, **more)
+        self.write(
+            user('2026-01-01T10:00:00Z', 'почини сборку')
+            + assistant('m1', stop='end_turn', ts='2026-01-01T10:01:00Z')
+            # a picture with a caption comes as a list of blocks, not a string
+            + user('2026-01-02T09:00:00Z', [{'type': 'image'}, {'type': 'text', 'text': 'что это?'}])
+            + assistant('m2', [('Read', {'file_path': 'a'})], ts='2026-01-02T09:00:10Z')
+            # none of these is a new request
+            + user('2026-01-02T09:00:20Z', [{'type': 'tool_result', 'content': 'ok'}])
+            + user('2026-01-02T09:00:30Z', 'напоминание системы', isMeta=True)
+            + user('2026-01-02T09:00:40Z', 'краткое содержание', isCompactSummary=True)
+        )
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.turn, server.ms('2026-01-02T09:00:00Z'))
+        self.assertEqual(t.first, server.ms('2026-01-01T10:00:00Z'))
+
 
 class SessionsTest(unittest.TestCase):
     def setUp(self):
@@ -188,6 +206,24 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual((a['model'], a['tool'], a['finished']), ('claude-haiku-5-5', 'grep', True))
         self.assertEqual(a['at'], server.ms('2026-01-01T10:00:05Z'))
         self.assertEqual((st['producer']['model'], st['producer']['tool']), ('claude-sonnet-5-5', 'agent'))
+
+    def test_clock_counts_from_the_current_turn(self):
+        pdir = os.path.join(self.dir.name, '-work-app')
+        os.makedirs(pdir)
+        with open(os.path.join(pdir, 'sid1.jsonl'), 'w') as f:
+            f.write(assistant('m0', stop='end_turn', ts='2026-01-01T10:00:00Z')
+                    + line(type='user', timestamp='2026-01-02T09:00:00Z', message={'role': 'user', 'content': 'дальше'})
+                    + assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-02T09:00:10Z'))
+        st = server.state('sid1')
+        self.assertEqual(st['since'], server.ms('2026-01-02T09:00:00Z'))
+        self.assertEqual(st['sessions'][0]['since'], server.ms('2026-01-02T09:00:00Z'))
+
+    def test_clock_without_a_prompt_counts_from_the_first_entry(self):
+        pdir = os.path.join(self.dir.name, '-work-app')
+        os.makedirs(pdir)
+        with open(os.path.join(pdir, 'sid1.jsonl'), 'w') as f:
+            f.write(assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-01T10:00:00Z'))
+        self.assertEqual(server.state('sid1')['since'], server.ms('2026-01-01T10:00:00Z'))
 
 
 class LedgerTest(unittest.TestCase):
@@ -435,6 +471,11 @@ class CodexTailTest(unittest.TestCase):
         self.assertTrue(self.tail(meta() + event('task_started')).busy)
         self.assertFalse(self.tail(meta() + event('task_started') + event('task_complete')).busy)
         self.assertFalse(self.tail(meta() + event('task_started') + event('turn_aborted')).busy)
+
+    def test_turn_starts_at_the_last_task(self):
+        t = self.tail(meta() + event('task_started', ts='2026-01-01T10:00:00.000Z') + event('task_complete', ts='2026-01-01T10:01:00.000Z')
+                      + event('task_started', ts='2026-01-02T09:00:00.000Z'))
+        self.assertEqual(t.turn, server.ms('2026-01-02T09:00:00.000Z'))
 
     def test_finished_items_read_as_actions(self):
         t = self.tail(meta()
