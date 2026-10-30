@@ -206,7 +206,7 @@ class TailTest(unittest.TestCase):
             return line(type='user', timestamp=ts, message={'role': 'user', 'content': content})
         self.write(user('2026-01-01T10:00:00Z', 'почини') + assistant('m1', [('Read', {'file_path': 'a'})], ts='2026-01-01T10:01:00Z'))
         t = server.Tail(self.path).feed()
-        now = server.ms('2026-01-01T10:05:00Z')
+        now = server.ms('2026-01-01T10:01:30Z')
         self.assertEqual(t.worked(now, True), [[server.ms('2026-01-01T10:00:00Z'), now]])
         self.write(assistant('m2', stop='end_turn', ts='2026-01-01T10:02:00Z'), mode='a')
         self.assertEqual(t.feed().worked(now, True), [[server.ms('2026-01-01T10:00:00Z'), server.ms('2026-01-01T10:02:00Z')]])
@@ -273,8 +273,20 @@ class TailTest(unittest.TestCase):
         t = server.Tail(self.path).feed()
         now = server.ms(ts) + (server.LIVE_S + 300) * 1000
         self.assertEqual(t.worked(now), [[server.ms(ts), now]])
-        lost = server.ms(ts) + (server.BG_LOST_S + 300) * 1000
-        self.assertEqual(t.worked(lost), [[server.ms(ts), server.ms(ts)]])
+
+    def test_clock_never_goes_back_when_a_turn_falls_silent(self):
+        ts = '2026-01-01T10:00:00Z'
+        self.write(line(type='user', timestamp=ts, message={'role': 'user', 'content': 'почини'}))
+        t = server.Tail(self.path).feed()
+        seen = server.ms(ts) + (server.LIVE_S - 1) * 1000
+        self.assertEqual(t.worked(seen), [[server.ms(ts), seen]])
+        self.assertEqual(t.worked(seen + 3600000), [[server.ms(ts), seen]])
+
+    def test_never_seen_turn_stops_at_its_last_record(self):
+        ts = '2026-01-01T10:00:00Z'
+        self.write(line(type='user', timestamp=ts, message={'role': 'user', 'content': 'почини'}))
+        t = server.Tail(self.path).feed()
+        self.assertEqual(t.worked(server.ms(ts) + (server.LIVE_S + 1) * 1000), [[server.ms(ts), server.ms(ts)]])
 
     def test_records_without_work_do_not_open_a_turn(self):
         def user(ts, content):
@@ -664,6 +676,8 @@ class CodexTailTest(unittest.TestCase):
                       + rec('turn_context', {'model': 'gpt-5.6-sol'}, back) + event('thread_settings_applied', back) + event('token_count', back)
                       + rec('response_item', {'type': 'message', 'role': 'developer', 'content': []}, back)
                       + rec('response_item', {'type': 'compaction'}, back)
+                      # nor do the kinds Codex has yet to invent
+                      + rec('something_new', {}, back) + event('something_new', back) + rec('response_item', {'type': 'something_new'}, back)
                       + event('task_started', ts='2026-01-01T12:00:30.000Z') + usage_record(ts='2026-01-01T12:01:00.000Z'))
         self.assertEqual(t.worked(0, False), [
             [server.ms('2026-01-01T10:00:00.000Z'), server.ms('2026-01-01T10:01:00.000Z')],
@@ -2123,6 +2137,71 @@ class BackgroundShellTest(unittest.TestCase):
         first = json.dumps(server.state('s1'), sort_keys=True)
         with mock.patch.object(server.time, 'time', return_value=time.time() + 5):
             self.assertEqual(json.dumps(server.state('s1'), sort_keys=True), first)
+
+    def process(self, sid, pid=None):
+        path = os.path.join(server.SESSIONS_DIR, '%d.json' % (pid or os.getpid()))
+        with open(path, 'w') as f:
+            json.dump({'pid': pid or os.getpid(), 'sessionId': sid}, f)
+        self.addCleanup(server.SEEN_ALIVE.clear)
+        return path
+
+    def at_work(self):
+        self.journal('s1', self.asked(300), self.called('b1', 300), self.in_background('b1', 'bg1', 299),
+                     self.asked(100), self.called('t1', 100))
+
+    def test_closed_session_stops_where_it_was_seen_last(self):
+        self.at_work()
+        self.agent('s1', 'a1', self.asked(100), self.called('c1', 50), finished=False)
+        path = self.process('s1')
+        self.assertTrue(server.state('s1')['workingSince'])
+        os.remove(path)
+        closed = server.state('s1')
+        self.assertEqual(closed['workingSince'], 0)
+        self.assertAlmostEqual(closed['worked'], 300000, delta=3000)
+        self.assertEqual([(s['status'], bool(s['end'])) for s in closed['shells']], [('killed', True)])
+        with mock.patch.object(server.time, 'time', return_value=time.time() + 3600):
+            self.assertEqual(server.state('s1')['worked'], closed['worked'])
+            [s] = server.sessions()
+            self.assertEqual((s['workingSince'], s['shells'], s['isLive']), (0, 0, False))
+
+    def test_dead_process_counts_as_closed(self):
+        self.at_work()
+        path = self.process('s1')
+        server.state('s1')
+        with open(path, 'w') as f:
+            json.dump({'pid': 2 ** 22 + 1, 'sessionId': 's1'}, f)
+        self.assertEqual(server.state('s1')['workingSince'], 0)
+
+    def test_session_reopened_after_closing_ticks_again(self):
+        self.at_work()
+        path = self.process('s1')
+        server.state('s1')
+        os.remove(path)
+        server.state('s1')
+        self.process('s1')
+        with open(os.path.join(self.pdir, 's1.jsonl'), 'a') as f:
+            f.write(self.asked(1))
+        self.assertTrue(server.state('s1')['workingSince'])
+
+    def test_half_written_process_file_does_not_close_anything(self):
+        self.at_work()
+        path = self.process('s1')
+        server.state('s1')
+        with open(path, 'w') as f:
+            f.write('{"pid"')
+        self.assertTrue(server.state('s1')['workingSince'])
+
+    def test_session_never_seen_alive_keeps_its_clock(self):
+        self.at_work()
+        self.assertTrue(server.state('s1')['workingSince'])
+
+    def test_lost_command_keeps_the_time_it_was_seen_running(self):
+        self.journal('s1', self.asked(300), self.called('b1', 300), self.in_background('b1', 'bg1', 299), self.stopped(298))
+        first = server.state('s1')
+        self.assertTrue(first['workingSince'])
+        later = time.time() + server.BG_LOST_S + 100
+        with mock.patch.object(server.time, 'time', return_value=later):
+            self.assertAlmostEqual(server.state('s1')['worked'], 300000, delta=3000)
 
     def test_only_an_agent_at_work_keeps_the_clock_ticking(self):
         self.journal('s1', self.asked(1000), self.stopped(900))

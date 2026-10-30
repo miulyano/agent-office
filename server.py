@@ -46,6 +46,7 @@ AGENT_IDLE_S = 10 * 60   # агент без finished и без записей �
 BG_DONE_S = 2 * 60       # столько завершённая фоновая команда стоит в серверной
 BG_FAILED_S = 10 * 60    # упавшая дольше: её надо успеть заметить
 BG_LOST_S = 3 * 3600     # команда без итога дольше — потеряна: журнал не пишет, что сессию закрыли
+CODEX_WORK = ('reasoning', 'custom_tool_call', 'custom_tool_call_output', 'function_call', 'function_call_output')
 INTERRUPTED = '[Request interrupted'
 NOT_WORK = (INTERRUPTED, '<command-name>', '<command-message>', '<local-command-')  # за такими записями работы нет: для часов это не запрос
 LOG_MAX = 80
@@ -383,6 +384,7 @@ class Tail:
         self.paid = set()      # ответ модели пишется в журнал кусками — платим за id один раз
         self.calling_shells = {}  # вызовы Bash без результата: id → (at, что делает)
         self.calling_tools = {}   # все вызовы без результата: id → at
+        self.shell_seen = {}      # до какого момента команду без итога видели идущей: id задачи → at
         self.shells = {}       # фоновые команды: id задачи → запись для серверной
 
     def feed(self):
@@ -421,16 +423,27 @@ class Tail:
         return self.open and (fresh or any(now_ms - at < BG_LOST_S * 1000 for at in self.calling_tools.values()))
 
     def worked(self, now_ms, alive=True):
-        """Отрезки работы: ходы и фоновые команды. alive=False: идти уже нечему, агент сдал работу."""
+        """Отрезки работы: ходы и фоновые команды. alive=False: идти уже нечему, агент сдал работу.
+        Что сейчас идёт, дописываем в память: показанное время назад не откатывается."""
+        if alive and self.spans and self.running(now_ms):
+            self.spans[-1][1] = max(self.spans[-1][1], now_ms)
         spans = [list(s) for s in self.spans]
-        if alive and spans and self.running(now_ms):
-            spans[-1][1] = max(spans[-1][1], now_ms)
         for s in self.shells.values():
-            # команда без итога потеряна: журнал не пишет, когда она встала, верим последней записи сессии
-            end = s['end'] or (now_ms if shell_shown(s, now_ms) else self.last)
+            if not s['end'] and shell_shown(s, now_ms):
+                self.shell_seen[s['id']] = now_ms
+            # команда без итога потеряна: журнал не пишет, когда она встала
+            end = s['end'] or self.shell_seen.get(s['id'], self.last)
             if s['start']:
                 spans.append([s['start'], max(s['start'], end)])
         return spans
+
+    def close(self, now_ms):
+        """Процесса сессии не стало: всё идущее остановилось."""
+        self.open = False
+        self.calling_tools.clear()
+        for s in self.shells.values():
+            if not s['end'] and shell_shown(s, now_ms):
+                s.update(status='killed', end=now_ms)
 
     def listing(self, a):
         """Список агентов приходит в журнал дельтами: добавлены, убраны."""
@@ -563,13 +576,13 @@ class Tail:
             del self.daily[old]
 
 
-def between_tasks(kind, p):
-    """Записи Codex, которые бывают и вне задачи: при возобновлении и перед новой."""
-    if kind == 'event_msg':
-        return p.get('type') in ('task_started', 'thread_settings_applied', 'token_count')
+def task_work(kind, p):
+    """Запись Codex о самой работе. Остальные бывают и вне задачи: при возобновлении и перед новой."""
     if kind == 'response_item':
-        return p.get('role') in ('developer', 'user') or p.get('type') == 'compaction'
-    return kind in ('session_meta', 'turn_context', 'world_state', 'compacted')
+        return p.get('role') == 'assistant' or p.get('type') in CODEX_WORK
+    if kind == 'event_msg':
+        return p.get('type') in ('item_completed', 'task_complete', 'turn_aborted')
+    return kind == 'token_usage_record'
 
 
 class CodexTail(Tail):
@@ -590,7 +603,7 @@ class CodexTail(Tail):
             self.first = self.first or at
             self.last = max(self.last, at)
             # задача могла оборваться без task_complete: тянем её только записями самой работы
-            if self.open and not between_tasks(kind, p):
+            if self.open and task_work(kind, p):
                 self.work(at)
         usage = codex_usage(self.meter, d)
         if kind == 'session_meta':
@@ -1824,14 +1837,14 @@ def project_name(pdir, cwd):
     return os.path.basename(pdir).split('-')[-1]
 
 
-def agents_of(pdir, sid, now_ms):
+def agent_journals(pdir, sid):
     sub = os.path.join(pdir, sid, 'subagents')
+    return [(name[6:-6], os.path.join(sub, name)) for name in names_in(sub) if name.startswith('agent-') and name.endswith('.jsonl')]
+
+
+def agents_of(pdir, sid, now_ms):
     agents = []
-    for name in names_in(sub):
-        if not (name.startswith('agent-') and name.endswith('.jsonl')):
-            continue
-        aid = name[6:-6]
-        path = os.path.join(sub, name)
+    for aid, path in agent_journals(pdir, sid):
         try:
             with open(path[:-6] + '.meta.json') as f:
                 meta = json.load(f)
@@ -1877,9 +1890,52 @@ def live_ids():
     return out
 
 
+def process_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OSError, OverflowError, TypeError):
+        return False
+    return bool(pid)
+
+
+def running_ids():
+    """Журналы сессий с живым процессом. None: файл дописывается, судить нельзя."""
+    out = set()
+    for name in names_in(SESSIONS_DIR):
+        if name.endswith('.json'):
+            d = read_json(os.path.join(SESSIONS_DIR, name))
+            if not isinstance(d, dict) or not d.get('sessionId'):
+                return None
+            if process_alive(d.get('pid')):
+                out.add(d['sessionId'])
+    return out
+
+
+SEEN_ALIVE = set()  # сессии, чей процесс застали: только про них можно сказать, что его не стало
+
+
+def note_closed(tails, now_ms):
+    """Журнал не пишет, что сессию закрыли, зато исчезает её процесс."""
+    alive = running_ids()
+    if alive is None:
+        return
+    for sid in SEEN_ALIVE - alive:
+        SEEN_ALIVE.discard(sid)
+        if sid in tails:
+            t, pdir, _ = tails[sid]
+            t.close(now_ms)
+            for _, path in agent_journals(pdir, sid):
+                tail(path).close(now_ms)
+    SEEN_ALIVE.update(alive & set(tails))
+
+
 def claude_tails():
     """Сессии Claude за сутки: id → (хвост, папка журналов, mtime)."""
-    return {sid: (tail(path), pdir, mtime) for mtime, sid, pdir, path in session_files()}
+    tails = {sid: (tail(path), pdir, mtime) for mtime, sid, pdir, path in session_files()}
+    note_closed(tails, time.time() * 1000)
+    return tails
 
 
 def task_tree(tails):
@@ -1917,9 +1973,9 @@ def task_of(sid, tails, parent):
 
 
 def sessions():
+    tails = claude_tails()  # раньше часов: закрытие сессии отмечается при чтении
     now = time.time()
     out = []
-    tails = claude_tails()
     parent = task_tree(tails)
     for sid, (t, pdir, mtime) in tails.items():
         live = now - mtime < LIVE_S
@@ -2122,8 +2178,8 @@ def room(tails, agents, office, heads, now_ms):
 
 
 def state(sid):
+    tails = claude_tails()  # раньше часов: закрытие сессии отмечается при чтении
     now = time.time()
-    tails = claude_tails()
     if sid in tails:
         # офис задачи — у её корня; порождённая сессия по клику показывает только своё
         parent = task_tree(tails)
