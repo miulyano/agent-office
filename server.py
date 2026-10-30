@@ -270,7 +270,7 @@ def home_of(cwd):
     """Папка проекта: рабочая копия worktree считается своим репозиторием."""
     if not cwd:
         return ''
-    return re.split(r'/\.claude/worktrees/', cwd)[0]
+    return re.split(r'/\.claude/worktrees(?:/|$)', cwd)[0]
 
 
 def folder_name(path):

@@ -1835,3 +1835,7 @@ class TaskTest(unittest.TestCase):
         st = server.state('root')
         self.assertEqual(st['log'][0]['text'], '$ ls')
         self.assertEqual([a['session'] for a in st['agents']], [1])
+
+    def test_project_name_of_the_worktrees_folder_itself(self):
+        self.assertEqual(server.project_name('', '/work/app/.claude/worktrees'), 'app')
+        self.assertEqual(server.project_name('', '/work/app/.claude/worktrees/x'), 'app')
