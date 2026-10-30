@@ -1,6 +1,6 @@
 ---
 name: git-workflow
-description: Ветки, сообщения коммитов и PR в Agent Office. Использовать перед созданием ветки, коммитом, пушем и открытием PR.
+description: Ветки, сообщения коммитов, PR и релизы в Agent Office. Использовать перед созданием ветки, коммитом, пушем, открытием PR и выпуском версии.
 license: MIT
 ---
 
@@ -52,6 +52,7 @@ docs: describe office manifest fields
 2. Если менялись `src/*.ts`: `npm run build`, собранные `web/*.js` в коммите.
 3. README совпадает с кодом, см. скил `readme-sync`.
 4. В диффе нет личных данных, см. скил `public-repo-hygiene`.
+5. Для `feat` и `fix` есть строка в `## [Unreleased]` файла `CHANGELOG.md`: `### Added`, `Changed`, `Fixed` или `Removed`, 1–2 строки. `docs/`, `test/`, `chore/` чейнджлог не трогают.
 
 ## PR и мерж
 
@@ -59,4 +60,17 @@ docs: describe office manifest fields
 
 ```bash
 gh pr merge --squash --delete-branch
+```
+
+## Релиз
+
+Версия по SemVer: `fix` поднимает PATCH, `feat` MINOR, ломающее изменение MAJOR. В обычных PR номер не меняется, только в релизном:
+
+1. В `CHANGELOG.md` заголовок `## [Unreleased]` стал `## [x.y.z] – ГГГГ-ММ-ДД`, выше новый пустой `## [Unreleased]`, внизу ссылка `[x.y.z]: .../releases/tag/vx.y.z`.
+2. Новая версия в `VERSION`, `package.json`, `package-lock.json` (`npm version x.y.z --no-git-tag-version`) и бейдже README.
+3. `npm test`, PR `chore: release x.y.z`, squash.
+4. После мержа тег на коммит в `main`. Релиз GitHub соберёт `.github/workflows/release.yml` из раздела чейнджлога.
+
+```bash
+git fetch origin && git tag vx.y.z origin/main && git push origin vx.y.z
 ```

@@ -27,11 +27,11 @@ license: MIT
 
 Только вымышленные данные. Снимок реального офиса показывает названия сессий, имена проектов и траты.
 
-Отдельный экземпляр сервера со своими папками журналов не видит настоящих сессий:
+Картинки README снимает `scripts/demo/shoot.sh`: он собирает вымышленные журналы (`scripts/demo/gen.py`) во временной папке и поднимает отдельный экземпляр сервера, который настоящих сессий не видит:
 
 ```bash
-CLAUDE_CONFIG_DIR=/tmp/demo/claude CODEX_HOME=/tmp/demo/codex \
-  python3 server.py --port 8799 --data /tmp/demo/data --shots /tmp/demo/shots
+scripts/demo/shoot.sh                # всё
+scripts/demo/shoot.sh hero menubar   # часть
 ```
 
 Осмотреть каждую картинку перед коммитом: заголовки сессий, журнал справа, подписи папок, суммы.

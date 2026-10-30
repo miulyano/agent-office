@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Версия 0.1.0"></a>
   <img src="https://img.shields.io/badge/python-3.9%2B-3776AB" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/зависимости-0-2ea44f" alt="Без зависимостей">
   <img src="https://img.shields.io/badge/строка_меню-macOS-555555" alt="Строка меню: macOS">
@@ -45,6 +46,8 @@ python3 server.py
 |---|---|---|
 | 🏢 | **Офис по этажам** | Все агенты сессии на одном экране, у каждого свой стол |
 | 👀 | **Все сессии сразу** | Claude Code и Codex, из любой папки, без настройки |
+| 🧵 | **Задача целиком** | Порождённые сессии в одном офисе с родителем, у людей метка с номером |
+| ⏱️ | **Часы** | Сколько агент работает, сколько заняло, с какого времени дома |
 | 💸 | **Деньги** | У каждого стола, по отделам, по сессии и за день |
 | 📊 | **Статистика** | Траты и токены по дням, моделям, папкам и часам |
 | 🤖 | **Живой штат** | Новый агент сам садится за стол рядом с коллегами |
@@ -55,6 +58,8 @@ python3 server.py
 ## Что на экране
 
 ![Общий вид: офис, список сессий и журнал](docs/screenshots/overview.png)
+
+<p align="center"><sub>Задача из двух сессий: в кабинете два руководителя, дизайнер с меткой ② пришёл из порождённой сессии.</sub></p>
 
 | Зона | Что там |
 |---|---|
@@ -93,7 +98,7 @@ python3 server.py
 
 ### Деньги
 
-Купюра и сумма у каждого стола, монетки летят к работающим, сумма отдела на доске этажа, итог на крыше.
+Купюра и сумма у каждого стола, монетки летят к работающим, сумма отдела на доске этажа, итог на крыше. Везде один знак после точки: `$1.3`, `$12.0`. Меньше пяти центов показывается как `<$0.1`, ноль как `$0.0`.
 
 Суммы посчитаны по ценам API, по подписке счёт другой. Цены лежат в таблице `PRICES` в `server.py`. Модель без цены (например, `codex-auto-review`) считается в токенах, но стоит $0.
 
@@ -243,6 +248,7 @@ python3 server.py [флаги]
 | `scripts/install-launchd.sh [порт]` | Собрать приложение, поставить в автозапуск |
 | `scripts/uninstall-launchd.sh` | Убрать автозапуск и приложение |
 | `scripts/build-menubar.sh [порт]` | Только собрать `build/AgentOffice.app` |
+| `scripts/demo/shoot.sh [hero styles codex menubar gif]` | Переснять картинки README на вымышленных данных. Нужны Google Chrome, Node 22+, ffmpeg |
 
 ### Разработка
 
@@ -328,9 +334,27 @@ src/shot.ts         названия скриншотов и PNG
 src/menubar.ts      исходник окошка, графики на SVG
 menubar/            приложение для строки меню (Swift, один файл)
 scripts/            сборка приложения, автозапуск
+scripts/demo/       вымышленные журналы и съёмка картинок для README
 tests/              тесты сервера (unittest)
 examples/           пример файла офиса
 docs/screenshots/   картинки для README, сняты на вымышленных данных
+.github/workflows/  релиз по тегу
+VERSION             текущая версия
+CHANGELOG.md        что менялось от версии к версии
+```
+
+## Релизы
+
+Версии по [SemVer](https://semver.org/lang/ru/), история в [CHANGELOG.md](CHANGELOG.md), готовые версии в [Releases](https://github.com/miulyano/agent-office/releases).
+
+Каждый `feat` и `fix` дописывает строку в раздел `[Unreleased]`. Номер меняется только в релизном PR:
+
+1. `[Unreleased]` становится `[x.y.z] – ГГГГ-ММ-ДД`, выше появляется новый пустой `[Unreleased]`, внизу ссылка на релиз.
+2. Новая версия в `VERSION`, `package.json`, `package-lock.json` и бейдже README. За расхождением следит `tests/test_release.py`.
+3. После мержа тег, дальше GitHub сам соберёт релиз из раздела чейнджлога:
+
+```bash
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 ## Как ведётся разработка
@@ -341,7 +365,7 @@ docs/screenshots/   картинки для README, сняты на вымышл
 |---|---|---|
 | [`karpathy-guidelines`](.claude/skills/karpathy-guidelines/SKILL.md) | Код и ревью | Думать до кода, простота, точечные правки, проверяемая цель |
 | [`tdd`](.claude/skills/tdd/SKILL.md) | Фича или багфикс | Сначала падающий тест, тесты не подгоняются под код |
-| [`git-workflow`](.claude/skills/git-workflow/SKILL.md) | Ветка, коммит, PR | Имена веток, Conventional Commits, squash |
+| [`git-workflow`](.claude/skills/git-workflow/SKILL.md) | Ветка, коммит, PR, релиз | Имена веток, Conventional Commits, squash, версии и чейнджлог |
 | [`readme-sync`](.claude/skills/readme-sync/SKILL.md) | Перед пушем | Какой раздел README проверить при какой правке |
 | [`verify-done`](.claude/skills/verify-done/SKILL.md) | Перед словом «готово» | Проверять результат, а не намерение |
 | [`public-repo-hygiene`](.claude/skills/public-repo-hygiene/SKILL.md) | Документы, примеры, скриншоты | Плейсхолдеры вместо личных данных |

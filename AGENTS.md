@@ -11,6 +11,7 @@ npm test            # тесты сервера, зависимости не н�
 npm run check       # типы TypeScript
 npm run build       # src/*.ts → web/*.js
 python3 server.py --port 8768
+scripts/demo/shoot.sh   # картинки README на вымышленных данных
 ```
 
 Собранные `web/*.js` лежат в репозитории: пользователь запускает проект без `npm`. Поменял `src/*.ts`, собери и положи в коммит.
@@ -20,7 +21,7 @@ python3 server.py --port 8768
 ## Обязательные правила
 
 1. **Сначала тест.** Для фичи или багфикса сначала падающий тест, потом код. Тесты не подгонять под сломанный код. Скил `tdd`.
-2. **В `main` не коммитить.** Ветка `<type>/<kebab-case-description>`, Conventional Commits, PR, squash. Скил `git-workflow`.
+2. **В `main` не коммитить.** Ветка `<type>/<kebab-case-description>`, Conventional Commits, PR, squash. Каждый `feat` и `fix` дописывает строку в `[Unreleased]` файла `CHANGELOG.md`. Скил `git-workflow`.
 3. **Репозиторий публичный.** Никаких настоящих доменов, путей, токенов и реальных сессий на скриншотах. Скил `public-repo-hygiene`.
 4. **README совпадает с кодом.** Скил `readme-sync`.
 5. **«Готово» только после проверки.** Скил `verify-done`.
