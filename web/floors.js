@@ -909,6 +909,14 @@ export function mountFloors(scene, overlay, onError) {
                 doorTops.push(top);
                 if (r === 0)
                     plant(c, xL + 36, top + 46);
+                // spare desks: a cell nobody owns still gets a desk, so the floor does not look half-built
+                for (let k = fl.def.cells.length - r * L.cols; k < L.cols; k++) {
+                    if (k < 0)
+                        continue;
+                    const sx = x0 + k * FL.cw + 12, sy = top + 46;
+                    drawChair(c, room, f, sx, sy);
+                    drawDesk(c, room, f, sx, sy, false, false, '', false, 0, t);
+                }
             }
             const busyHere = people.filter(p => now_.get(p.key).work).length;
             whiteboard(c, xL + 2, fl.y + 2, FL.plaque - 6, 19);
