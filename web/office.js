@@ -33,5 +33,7 @@ export function deskName(type, office) {
     return desk?.short ?? roleName(type, office);
 }
 export function money(usd) {
-    return '$' + (usd < 10 ? usd.toFixed(2) : usd < 100 ? usd.toFixed(1) : Math.round(usd).toString());
+    if (usd > 0 && usd < 0.05)
+        return '<$0.1'; // a few cents are not «$0.0»
+    return '$' + usd.toFixed(1).replace(/\B(?=(\d{3})+\.)/g, '\u00a0');
 }

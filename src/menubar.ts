@@ -2,6 +2,8 @@
 // Lives on the server like the office itself, so a style change shows up the
 // next time the popover opens, without rebuilding the app.
 
+import { money } from './office.js'
+
 type Provider = 'claude' | 'codex'
 
 type Session = {
@@ -57,11 +59,7 @@ function keep(key: string, value: string) {
   try { localStorage.setItem('ao.' + key, value) } catch { /* private mode */ }
 }
 
-// ── Numbers: whole dollars, cents only below a dollar ──
-function money(usd: number): string {
-  if (usd > 0 && usd < 1) return '$' + usd.toFixed(2)
-  return '$' + Math.round(usd).toLocaleString('ru-RU').replace(/\s/g, ' ')
-}
+// ── Numbers ──
 function pct(part: number, all: number): string {
   const p = all ? (part / all) * 100 : 0
   // a sliver is not «0%»: model output is well under a percent of all tokens
@@ -78,7 +76,6 @@ const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
 const parse = (day: string) => new Date(day + 'T00:00:00')
 const short = (day: string) => { const d = parse(day); return `${d.getDate()} ${MONTHS[d.getMonth()]}` }
 const weekday = (day: string) => (parse(day).getDay() + 6) % 7
-const clock = (t: number) => { const d = new Date(t); return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}` }
 function ago(t: number): string {
   const m = Math.round((Date.now() - t) / 60000)
   return m < 60 ? `${m} мин назад` : `${Math.round(m / 60)} ч назад`

@@ -52,6 +52,40 @@ class DescribeTest(unittest.TestCase):
         self.assertEqual(server.describe('mcp__srv__do_thing', {}), 'srv do_thing')
 
 
+class MoneyFormatTest(unittest.TestCase):
+    """Суммы в офисе и в окошке строки меню: один знак после запятой."""
+
+    def money(self, *values):
+        import shutil
+        import subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('нет node')
+        web = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'web', 'office.js')
+        script = (
+            f"import {{ money }} from {json.dumps('file://' + os.path.abspath(web))};"
+            f"console.log(JSON.stringify({json.dumps(values)}.map(money)))"
+        )
+        out = subprocess.run([node, '--input-type=module', '-e', script], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_one_decimal_at_any_size(self):
+        self.assertEqual(self.money(0, 0.96, 1.26, 12.04, 123.45), ['$0.0', '$1.0', '$1.3', '$12.0', '$123.5'])
+
+    def test_thousands_are_grouped(self):
+        self.assertEqual(self.money(1234.56), ['$1\u00a0234.6'])
+
+    def test_a_cent_is_not_shown_as_nothing(self):
+        self.assertEqual(self.money(0.04), ['<$0.1'])
+
+    def test_popover_uses_the_shared_format(self):
+        web = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'web', 'menubar.js')
+        with open(web, encoding='utf-8') as f:
+            source = f.read()
+        self.assertIn("from './office.js'", source)
+        self.assertNotIn('function money', source)
+
+
 class CostTest(unittest.TestCase):
     def test_price_per_million_with_cache(self):
         usage = {'input_tokens': 1_000_000, 'output_tokens': 1_000_000, 'cache_read_input_tokens': 1_000_000}

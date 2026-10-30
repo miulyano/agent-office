@@ -39,8 +39,8 @@ struct Session: Decodable {
 
 /// Целые доллары, центы — только до доллара: в строке меню место дорого.
 func money(_ usd: Double) -> String {
-    if usd > 0 && usd < 1 { return String(format: "$%.2f", usd) }
-    return "$" + String(Int(usd.rounded(.toNearestOrAwayFromZero)))
+    if usd > 0 && usd < 0.05 { return "<$0.1" }
+    return String(format: "$%.1f", usd)
 }
 
 // ── Пиксельный офис: значок в строке меню и иконка приложения из одной картинки ──
@@ -66,8 +66,8 @@ enum Pixel {
     static let colors: [Character: UInt32] = [
         "G": 0xf0c040, "R": 0x8a4a5a, "B": 0x4b5a8a, "C": 0x6ee7ff, "Y": 0xf0c040, "D": 0x1b1e2b, "O": 0xa0673d, "L": 0x3a3e63,
     ]
-    /// Без плашки офис стоит прямо на строке меню: пол светлее, чтобы не пропадал на тёмной.
-    static let menuColors = colors.merging(["L": 0x8a8fb0]) { $1 }
+    /// Без плашки офис стоит прямо на строке меню: вывеска и пол средних тонов, чтобы не пропадали ни на тёмной, ни на светлой.
+    static let menuColors = colors.merging(["G": 0xb87d10, "L": 0x6f7496]) { $1 }
 
     static func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> NSColor {
         NSColor(srgbRed: CGFloat(hex >> 16 & 0xff) / 255, green: CGFloat(hex >> 8 & 0xff) / 255, blue: CGFloat(hex & 0xff) / 255, alpha: alpha)
@@ -149,7 +149,7 @@ enum Pixel {
     static func lamp(_ on: Bool, font: NSFont) -> NSAttributedString {
         let d: CGFloat = 7
         let img = NSImage(size: NSSize(width: d, height: d), flipped: false) { r in
-            color(0x4ade80, on ? 1 : 0.3).setFill()
+            color(0x168f44, on ? 1 : 0.35).setFill()
             NSBezierPath(ovalIn: r).fill()
             return true
         }
@@ -157,6 +157,14 @@ enum Pixel {
         a.image = img
         a.bounds = NSRect(x: 0, y: (font.capHeight - d) / 2, width: d, height: d)
         return NSAttributedString(attachment: a)
+    }
+}
+
+/// Подложка окошка: цвет --bg из web/menubar.html.
+final class PopoverBackground: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        Pixel.color(0x14151f).setFill()
+        dirtyRect.fill()
     }
 }
 
@@ -467,7 +475,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate, NSPopoverDeleg
         }
         if Date().timeIntervalSince(pageAt) > 30 || offlinePage { loadPage() } else { show() }
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+        paintPopover()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Рамка и хвостик окошка системные: под ними фон страницы, иначе вокруг неё серая кайма.
+    func paintPopover() {
+        guard let frame = web.window?.contentView?.superview,
+              !frame.subviews.contains(where: { $0 is PopoverBackground }) else { return }
+        let back = PopoverBackground(frame: frame.bounds)
+        back.autoresizingMask = [.width, .height]
+        frame.addSubview(back, positioned: .below, relativeTo: nil)
     }
 
     func setupPopover() {
