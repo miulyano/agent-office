@@ -1878,6 +1878,11 @@ class BackgroundShellTest(unittest.TestCase):
     def told(self, task, age, status='completed'):
         return line(type='user', timestamp=self.ago(age), cwd='/work/app', isMeta=True, message={'role': 'user', 'content': self.note(task, status)})
 
+    def killed(self, task, age, result=None):
+        result = {'message': 'Successfully stopped task: %s (make)' % task, 'task_id': task, 'task_type': 'local_bash', 'command': 'make'} if result is None else result
+        return line(type='user', timestamp=self.ago(age), cwd='/work/app', toolUseResult=result, message={
+            'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'stop-' + task, 'content': 'stopped'}]})
+
     def stopped(self, age):
         return line(type='assistant', timestamp=self.ago(age), cwd='/work/app', message={
             'id': 'end', 'model': 'claude-sonnet-5-5', 'stop_reason': 'end_turn', 'content': [{'type': 'text', 'text': 'жду'}],
@@ -1918,6 +1923,42 @@ class BackgroundShellTest(unittest.TestCase):
     def test_quoted_notification_of_an_unknown_task_changes_nothing(self):
         self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190), self.told('чужой', 20))
         self.assertEqual([s['status'] for s in self.shells()], ['running'])
+
+    def test_stopped_command_is_killed_at_the_time_of_the_stop(self):
+        self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190), self.killed('b1', 20))
+        got = self.shells()[0]
+        self.assertEqual((got['status'], got['end']), ('killed', int(self.now - 20) * 1000))
+
+    def test_session_cools_down_after_the_command_was_stopped(self):
+        quiet = server.LIVE_S + 60
+        self.journal('s1', self.asked(quiet + 50), self.called('t1', quiet + 20), self.in_background('t1', 'b1', quiet + 10), self.killed('b1', quiet), age=quiet)
+        got = {s['id']: s for s in server.sessions()}['s1']
+        self.assertEqual((got['isLive'], got['shells']), (False, 0))
+
+    def test_stop_of_an_unknown_task_changes_nothing(self):
+        self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190), self.killed('чужой', 20))
+        self.assertEqual([s['status'] for s in self.shells()], ['running'])
+
+    def test_failed_stop_with_a_text_result_changes_nothing(self):
+        self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190), self.killed('b1', 20, 'No task found with ID: b1'))
+        self.assertEqual([s['status'] for s in self.shells()], ['running'])
+
+    def test_stop_does_not_overwrite_a_finished_command(self):
+        self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190), self.queued('b1', 30), self.killed('b1', 10))
+        got = self.shells()[0]
+        self.assertEqual((got['status'], got['end']), ('completed', int(self.now - 30) * 1000))
+
+    def test_notification_after_a_stop_does_not_overwrite_it(self):
+        self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190), self.killed('b1', 30), self.queued('b1', 10, 'killed'))
+        got = self.shells()[0]
+        self.assertEqual((got['status'], got['end']), ('killed', int(self.now - 30) * 1000))
+
+    def test_notification_without_a_status_does_not_borrow_the_next_ones(self):
+        text = '<task-notification>\n<task-id>b1</task-id>\n<summary>предупреждение</summary>\n</task-notification>\n' + self.note('b2')
+        row = line(type='user', timestamp=self.ago(20), cwd='/work/app', isMeta=True, message={'role': 'user', 'content': text})
+        self.journal('s1', self.asked(300), self.called('t1', 200), self.in_background('t1', 'b1', 190),
+                     self.called('t2', 180), self.in_background('t2', 'b2', 170), row)
+        self.assertEqual({s['id']: s['status'] for s in self.shells()}, {'b1': 'running', 'b2': 'completed'})
 
     def test_background_agent_stays_at_its_desk_and_out_of_the_server_room(self):
         self.journal('s1', self.asked(300), self.called('t1', 200, name='Agent'), self.in_background('t1', 'b1', 190))

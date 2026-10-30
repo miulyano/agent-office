@@ -71,7 +71,9 @@ PRICES = {
 LOCK = threading.Lock()  # журналы дочитываются по одному
 LINKED_RE = re.compile(r'(\S+) = (local_[0-9a-f-]+) \(')
 BACKGROUND_RE = re.compile(r'^Background \(from the session that started this one\)', re.M)
-TASK_NOTE_RE = re.compile(r'<task-notification>.*?<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>', re.S)
+TASK_NOTE_RE = re.compile(r'<task-notification>(.*?)</task-notification>', re.S)
+TASK_ID_RE = re.compile(r'<task-id>([^<]+)</task-id>')
+TASK_STATUS_RE = re.compile(r'<status>([^<]+)</status>')
 MARKS = '①②③④⑤⑥⑦⑧⑨'
 
 
@@ -448,6 +450,11 @@ class Tail:
         """Результат вызова: команда либо закончилась, либо ушла в фон. Считаем от самого вызова."""
         result = d.get('toolUseResult')
         task = result.get('backgroundTaskId') if isinstance(result, dict) else None
+        # TaskStop обычно уведомления не присылает: остановку видно по самому ответу
+        stopped = result.get('task_id') if isinstance(result, dict) else None
+        shell = self.shells.get(stopped) if isinstance(stopped, str) else None
+        if shell and not shell['end'] and at:
+            shell.update(status='killed', end=at)
         for b in content if isinstance(content, list) else []:
             call = self.calling_shells.pop(b.get('tool_use_id'), None) if isinstance(b, dict) else None
             if call and task:
@@ -455,10 +462,12 @@ class Tail:
 
     def notified(self, text, at):
         """Итог приходит уведомлением, одним и тем же в нескольких записях: время берём из первой."""
-        for task, status in TASK_NOTE_RE.findall(text) if isinstance(text, str) and at else ():
-            shell = self.shells.get(task)
+        # каждое уведомление разбираем отдельно: без статуса оно не должно занять чужой
+        for block in TASK_NOTE_RE.findall(text) if isinstance(text, str) and at else ():
+            task, status = TASK_ID_RE.search(block), TASK_STATUS_RE.search(block)
+            shell = self.shells.get(task.group(1)) if task and status else None
             if shell and not shell['end']:
-                shell.update(status=status, end=at)
+                shell.update(status=status.group(1), end=at)
 
     def running_shells(self, now_ms):
         return sum(1 for s in self.shells.values() if shell_shown(s, now_ms) and not s['end'])
