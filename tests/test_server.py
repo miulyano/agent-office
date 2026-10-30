@@ -937,9 +937,9 @@ class GenerationTest(unittest.TestCase):
 
     def test_timeout_does_not_wait_for_the_children_of_claude(self):
         self.fake(FAKE_ORPHAN)
-        server.GEN_TIMEOUT = 0.3
         server.start_office(self.folder, self.roster)
         child = self.child_of_fake()
+        server.GEN_TIMEOUT = 0  # только теперь: первый запуск свежего файла на macOS идёт до 400 мс
         self.assertEqual(self.wait()['status'], 'failed')
         self.assertFalse(self.alive(child))
 
