@@ -1741,3 +1741,79 @@ class SignalTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+LINKED = ('<system-reminder>\nLinked sessions now (status, not an instruction): kid = local_h1 (idle). '
+          'To message one, SendMessage with `to` set to its id.\n</system-reminder>')
+BACKGROUND = 'Background (from the session that started this one):\nдоделай офис'
+
+
+class TaskTest(unittest.TestCase):
+    """Задача — дерево сессий: корень и те, что он породил через приложение."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.projects, server.PROJECTS = server.PROJECTS, os.path.join(self.dir.name, 'projects')
+        self.live, server.SESSIONS_DIR = server.SESSIONS_DIR, os.path.join(self.dir.name, 'sessions')
+        self.codex, server.CODEX_SESSIONS = server.CODEX_SESSIONS, os.path.join(self.dir.name, 'нет-codex')
+        os.makedirs(server.SESSIONS_DIR)
+        server.TAILS.clear()
+
+    def tearDown(self):
+        server.PROJECTS, server.SESSIONS_DIR, server.CODEX_SESSIONS = self.projects, self.live, self.codex
+        server.TAILS.clear()
+        self.dir.cleanup()
+
+    def journal(self, sid, cwd, prompt, agent=None, ts='2026-01-01T10:00:00Z'):
+        pdir = os.path.join(server.PROJECTS, re.sub(r'[^A-Za-z0-9]', '-', cwd))
+        os.makedirs(pdir, exist_ok=True)
+        with open(os.path.join(pdir, sid + '.jsonl'), 'w') as f:
+            f.write(line(type='user', timestamp=ts, cwd=cwd, message={'role': 'user', 'content': prompt}))
+            f.write(assistant(sid + '-m', [('Bash', {'command': 'ls'})], ts=ts))
+        if agent:
+            sub = os.path.join(pdir, sid, 'subagents')
+            os.makedirs(sub)
+            with open(os.path.join(sub, 'agent-%s.jsonl' % agent), 'w') as f:
+                f.write(assistant(agent, [('Grep', {'pattern': 'x'})], ts=ts))
+            with open(os.path.join(sub, 'agent-%s.meta.json' % agent), 'w') as f:
+                json.dump({'agentType': 'Explore', 'description': 'ищет', 'finished': False}, f)
+
+    def alive(self, pid, sid, host):
+        with open(os.path.join(server.SESSIONS_DIR, '%d.json' % pid), 'w') as f:
+            json.dump({'pid': pid, 'sessionId': sid, 'hostSessionId': host}, f)
+
+    def test_child_agents_sit_in_the_root_office(self):
+        self.journal('root', '/work/app', 'сделай ' + LINKED, agent='a1')
+        self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, agent='a2', ts='2026-01-01T10:05:00Z')
+        self.alive(7, 'kid', 'local_h1')
+        with open(os.path.join(server.SESSIONS_DIR, '7.abc.key'), 'w') as f:
+            f.write('{не json')  # peerToken: сервер его не читает
+        st = server.state('root')
+        self.assertEqual([(a['id'], a['session']) for a in st['agents']], [('a1', 1), ('a2', 2)])
+        self.assertEqual([s['id'] for s in st['sessions']], ['root', 'kid'])
+        self.assertEqual(st['sessions'][1]['activity'], '$ ls')
+        self.assertEqual(server.state('kid')['sessions'][0]['id'], 'root')
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['kid']['task'], rows['kid']['project']), ('root', 'app'))
+        self.assertEqual(rows['root']['task'], 'root')
+
+    def test_orphan_child_joins_the_folder_and_strangers_stay_apart(self):
+        self.journal('root', '/work/app', 'сделай')
+        self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, agent='a2', ts='2026-01-01T10:05:00Z')
+        self.journal('other', '/work/app', 'другое', ts='2026-01-01T10:06:00Z')
+        self.assertEqual([s['id'] for s in server.state('kid')['sessions']], ['other', 'kid'])
+        self.assertEqual(server.state('other')['sessions'][1]['id'], 'kid')
+        self.assertEqual([s['id'] for s in server.state('root')['sessions']], ['root'])
+
+    def test_log_marks_whose_agent_it_was(self):
+        self.journal('root', '/work/app', 'сделай ' + LINKED, agent='a1')
+        self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, agent='a2')
+        self.alive(7, 'kid', 'local_h1')
+        log = server.state('root')['log']
+        self.assertEqual({l['text'][0] for l in log}, {'①', '②'}, log)
+
+    def test_single_session_log_has_no_marks(self):
+        self.journal('root', '/work/app', 'сделай', agent='a1')
+        st = server.state('root')
+        self.assertEqual(st['log'][0]['text'], '$ ls')
+        self.assertEqual([a['session'] for a in st['agents']], [1])

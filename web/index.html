@@ -97,6 +97,9 @@
   .sess:hover { background: var(--floor); }
   .sess.sel { --c: var(--gold); background: var(--floor); }
   .sess .t { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+  /* сессия, порождённая другой: под родителем, со сдвигом */
+  .sess.kid { width: calc(100% - 2 * var(--px) - 14px); margin-left: calc(var(--px) + 14px); }
+  .sess .br { color: var(--pc); opacity: .8; font-family: Menlo, monospace; font-size: 10px; }
   .sess .t span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess .m { color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; padding-left: 16px; }
   .sess .d { width: 8px; height: 8px; border-radius: 50%; background: #4a4d68; flex: none; }
@@ -238,9 +241,16 @@ function drawProviders() {
   }
 }
 
+// дети задачи идут сразу за своим корнем; корень без детей — обычная строка
+function nested(rows) {
+  const ids = new Set(rows.map(s => s.id))
+  const roots = rows.filter(s => !s.task || s.task === s.id || !ids.has(s.task))
+  return roots.flatMap(r => [r, ...rows.filter(s => s !== r && s.task === r.id).map(s => ({ ...s, kid: true }))])
+}
+
 function drawList() {
   drawProviders()
-  const rows = shown()
+  const rows = nested(shown())
   if (rows.length === 0) {
     delete list.dataset.html
     list.innerHTML = `<div class="empty">За сутки сессий${provider === 'all' ? '' : ' ' + PROVIDERS[provider]} не было.</div>`
@@ -251,9 +261,10 @@ function drawList() {
     const work = s.working ? `в работе ${s.working}` : ago(s.at)
     const agents = s.agents ? ` · агентов ${s.agents}` : ''
     const usd = s.cost ? ` · <span class="usd">${money(s.cost)}</span>` : ''
-    return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}" data-id="${s.id}">
-      <div class="t"><span class="d ${cls}"></span><span>${esc(s.title)}</span></div>
-      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)} · ${work}${agents}${usd}</div></button>`
+    const branch = s.kid && s.branch ? ` · <span class="br">${esc(s.branch)}</span>` : ''
+    return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}">
+      <div class="t"><span class="d ${cls}"></span><span>${s.kid ? '↳ ' : ''}${esc(s.title)}</span></div>
+      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${agents}${usd}</div></button>`
   }).join('')
   // не трогать список без перемен: иначе клик попадает в уже заменённую кнопку
   if (html !== list.dataset.html) {
@@ -448,11 +459,13 @@ async function pollState() {
       draw(live)
     }
     const s = sessions.find(s => s.id === current)
+    // офис показывает всю задачу: в шапке имя её корня, даже если кликнули по дочерней сессии
+    const heads = live.sessions ?? [], title = heads[0]?.title ?? s?.title
     plate.className = 'plate p-' + s?.provider
     plate.textContent = s ? PROVIDERS[s.provider].toUpperCase() : ''
-    titleEl.textContent = s ? s.title : 'Agent Office'
-    document.title = s ? `Agent Office — ${s.title}` : 'Agent Office'
-    const working = live.agents.filter(a => a.isWorking).length + (live.producer.isBusy ? 1 : 0)
+    titleEl.textContent = title ?? 'Agent Office'
+    document.title = title ? `Agent Office — ${title}` : 'Agent Office'
+    const working = live.agents.filter(a => a.isWorking).length + (heads.length ? heads.filter(h => h.isBusy).length : (live.producer.isBusy ? 1 : 0))
     total.textContent = money(live.cost)
     total.title = `${roleName('main', live.office)} ${money(live.producer.cost)}, агенты ${money(live.cost - live.producer.cost)}`
     status.textContent = !s ? '' : s.isLive ? `${s.project} · в работе ${working}` : `${s.project} · последняя активность ${ago(s.at)}`
@@ -460,7 +473,7 @@ async function pollState() {
 }
 
 function empty() {
-  return { agents: [], producer: { isBusy: false, activity: '', at: 0, calls: 0, cost: 0, model: '', tool: '' }, cost: 0, log: [], since: Date.now(),
+  return { agents: [], producer: { isBusy: false, activity: '', at: 0, calls: 0, cost: 0, model: '', tool: '' }, sessions: [], cost: 0, log: [], since: Date.now(),
     office: { folder: '', title: 'AGENT OFFICE', zones: [], guests: {}, saved: true } }
 }
 

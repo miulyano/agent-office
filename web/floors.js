@@ -7,6 +7,9 @@ const SKIN = ['#f1c27d', '#e0ac69', '#c68642', '#ffdbac', '#8d5524'];
 const HAIRS = ['#2b1d14', '#1a1a1a', '#6b4a2b', '#c9a227', '#9a9a9a', '#8a5a2b', '#3a2416', '#e05a8a'];
 const CAPS = ['#d06a2a', '#2f7a5a', '#c03040', '#3a6ab0'];
 const INK = '#1a1a22', GOLD = '#f0c040';
+const MARKS = '①②③④⑤⑥⑦⑧⑨';
+// a task of several sessions marks everyone with their session's number, as the server does in the log
+const markOf = (st, n) => (st.sessions?.length ?? 1) > 1 ? MARKS[Math.min(n, MARKS.length) - 1] + ' ' : '';
 // the model is the grade: Haiku in a cap, Sonnet in a hoodie, Opus in a suit, Fable in a dark suit with glasses;
 // Codex models take the same grades by their tier
 const MODEL_GRADE = [['haiku', 'intern', 'Haiku'], ['sonnet', 'middle', 'Sonnet'], ['opus', 'senior', 'Opus'], ['fable', 'lead', 'Fable'],
@@ -43,8 +46,14 @@ const FREE_HOME = 4; // free-lancers gone home that still keep a cell; the rest 
 function building(st, now) {
     const office = st.office;
     const mainDesk = deskOf(office, 'main');
-    const [bg, bm] = gradeOf(st.producer.model);
-    const boss = { key: 'boss', name: deskName('main', office), grade: bg, model: bm, boss: true, look: lookOf('boss', mainDesk, '#3b3f8f', true) };
+    const heads = st.sessions ?? [];
+    // the root's head is the boss; the heads of the sessions it started sit beside in the same room
+    const chief = (h, i) => {
+        const [g, m] = gradeOf(h?.model ?? st.producer.model);
+        const key = i === 0 ? 'boss' : 'head:' + h.id;
+        return { key, name: markOf(st, i + 1) + deskName('main', office), grade: g, model: m, boss: true, head: h, look: lookOf(key, i === 0 ? mainDesk : undefined, '#3b3f8f', i === 0) };
+    };
+    const boss = chief(heads[0], 0);
     const floors = office.zones
         .map(z => ({ name: z.name, home: 0, cells: z.desks.filter(d => d.type !== 'main').map(d => ({ key: d.type, name: d.short ?? d.name })) }));
     const free = { name: 'ФРИЛАНС', cells: [], free: true, home: 0 };
@@ -56,7 +65,7 @@ function building(st, now) {
         const desk = deskOf(office, a.type);
         const own = desk && desk.type !== 'main' ? desk : undefined;
         const [grade, model] = gradeOf(a.model);
-        const name = deskName(a.type, office);
+        const name = markOf(st, a.session ?? 1) + deskName(a.type, office);
         // a desk's owner looks the same every time they are called
         const person = { key: a.id, name, grade, model, boss: false, agent: a, desk: !!own, look: lookOf(own ? own.type : a.id, own, GUESTS[a.type]?.shirt ?? '#5a6a8a') };
         const fi = own ? office.zones.findIndex(z => z.desks.includes(own)) : -1;
@@ -93,7 +102,7 @@ function building(st, now) {
         }
     if (free.cells.length || free.home)
         floors.push(free);
-    return { boss, floors: floors.filter(f => f.cells.length || f.home) };
+    return { boss, heads: heads.slice(1).map((h, i) => chief(h, i + 1)), floors: floors.filter(f => f.cells.length || f.home) };
 }
 const ICON = { read: 'read', edit: 'edit', write: 'write', grep: 'grep', bash: 'bash', web: 'web', agent: 'phone', skill: 'skill', other: 'tool' };
 function busy(tool, text) {
@@ -102,7 +111,7 @@ function busy(tool, text) {
 }
 function doing(p, st, now) {
     if (p.boss) {
-        const pr = st.producer;
+        const pr = p.head ?? st.producer;
         if (pr.isBusy && now - pr.at < THINK)
             return busy(pr.tool, pr.activity);
         if (pr.isBusy)
@@ -719,11 +728,20 @@ function layout(b, room, key) {
     const f = FIGS[room.fig];
     const cols = Math.max(FL.minCols, Math.min(FL.maxCols, ...b.floors.map(fl => fl.cells.length)));
     const x0 = FL.pad + FL.shaft + FL.plaque, width = x0 + cols * FL.cw + FL.pad;
-    let y = FL.roof;
+    // a task of several sessions gets a line under the roof saying which one is at work now
+    const roof = FL.roof + (b.heads.length ? 7 : 0);
+    let y = roof;
     const bx = x0 + Math.floor((cols - 2) / 2) * FL.cw;
     const boss = { x: bx, top: y + FL.info, sx: bx + 14, sy: y + FL.info + 46, wide: true };
+    const cells = new Map();
+    // the heads of started sessions: right of the boss, then left, as many as the room holds
+    b.heads.forEach((h, i) => {
+        const k = Math.floor(i / 2) + 1, x = i % 2 === 0 ? bx + 2 * FL.cw + (k - 1) * FL.cw : bx - k * FL.cw;
+        if (x >= x0 && x + FL.cw <= x0 + cols * FL.cw)
+            cells.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 });
+    });
     y += FL.rowH;
-    const floors = [], cells = new Map();
+    const floors = [];
     for (const def of b.floors) {
         // a floor whose free-lancers all went home still keeps one row of empty desks
         const rows = Math.max(1, Math.ceil(def.cells.length / cols));
@@ -737,7 +755,7 @@ function layout(b, room, key) {
     }
     const lobby = y + FL.info;
     const couchX = x0 + 60, couchW = width - FL.pad - 12 - couchX;
-    return { key, f, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, floors, cells, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
+    return { key, f, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
 }
 export function mountFloors(scene, overlay, onError) {
     const ctx = scene.getContext('2d'), octx = overlay.getContext('2d');
@@ -759,7 +777,7 @@ export function mountFloors(scene, overlay, onError) {
             return;
         built = building(st, now);
         const room = OFFICES[style.office] ?? OFFICES.cozy;
-        const key = style.office + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + (c.person ? '+' : '')).join(',')).join('/');
+        const key = style.office + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + (c.person ? '+' : '')).join(',')).join('/');
         if (L && L.key === key)
             return;
         L = layout(built, room, key);
@@ -825,15 +843,15 @@ export function mountFloors(scene, overlay, onError) {
         const c = ctx;
         c.clearRect(0, 0, width, height);
         sky(c, width, height, tm, t);
-        R(c, FL.pad - 3, FL.roof - 5, width - 2 * FL.pad + 6, height - FL.roof - FL.ground + 5, room.facade);
-        R(c, FL.pad - 4, FL.roof - 6, width - 2 * FL.pad + 8, 2, shade(room.facade, 0.7));
+        R(c, FL.pad - 3, L.roof - 5, width - 2 * FL.pad + 6, height - L.roof - FL.ground + 5, room.facade);
+        R(c, FL.pad - 4, L.roof - 6, width - 2 * FL.pad + 8, 2, shade(room.facade, 0.7));
         box(c, x0 + 20, 4, L.cols * FL.cw - 40, 13, '#14152a', GOLD);
         for (let i = 0; i < 3; i++)
             banknote(c, x0 + 24 + i, 9 - i);
         R(c, 0, height - FL.ground, width, FL.ground, '#3a3a46');
         R(c, 0, height - FL.ground, width, 1, '#55556a');
         // who is doing what
-        const everyone = [built.boss, ...built.floors.flatMap(fl => fl.cells.flatMap(cell => cell.person ? [cell.person] : []))];
+        const everyone = [built.boss, ...built.heads, ...built.floors.flatMap(fl => fl.cells.flatMap(cell => cell.person ? [cell.person] : []))];
         const now_ = new Map(), memo = new Map();
         for (const p of everyone) {
             const d = doing(p, st, now);
@@ -841,9 +859,16 @@ export function mountFloors(scene, overlay, onError) {
             memo.set(p.key, track(p, d, now, t));
         }
         // «в работе» как на сервере и в списке сессий: незавершённые агенты и занятый руководитель
-        const working = st.agents.filter(a => a.isWorking).length + (st.producer.isBusy ? 1 : 0);
+        const heads = st.sessions ?? [];
+        const working = st.agents.filter(a => a.isWorking).length + heads.filter(h => h.isBusy).length;
         labels.push({ x: width / 2, y: 7.5, text: st.office.title || 'AGENT OFFICE', px: 5, color: st.office.accent ?? GOLD, display: true, stroke: false });
         labels.push({ x: width / 2, y: 18, text: `в работе ${working} · агентов ${st.agents.length} · итого ${money(st.cost)}`, px: 4.2, color: '#ffffff', w: 600 });
+        if (heads.length > 1) {
+            // which session is at work now: the busy one that wrote last, else the one that wrote last
+            const latest = (hs) => hs.reduce((a, b) => (b.at > a.at ? b : a));
+            const cur = latest(heads.filter(h => h.isBusy).length ? heads.filter(h => h.isBusy) : heads);
+            labels.push({ x: width / 2, y: 24.5, text: `сейчас: ${markOf(st, heads.indexOf(cur) + 1)}${cur.title} · сессий ${heads.length}`, px: 3.6, color: 'rgba(235,235,250,0.85)', maxw: width - 2 * FL.pad - 8 });
+        }
         // the producer's office: panorama window, carpet, board
         const doorTops = [], P = L.boss.top;
         R(c, xL, P - FL.info, xR - xL, 46 + FL.info, shade(room.wall, 0.93));
@@ -900,10 +925,10 @@ export function mountFloors(scene, overlay, onError) {
         box(c, xL + 4, lobby + 11, 14, 5, '#1b1d2e', GOLD);
         labels.push({ x: xL + 11, y: lobby + 11.6, text: 'ХОЛЛ', px: 3, color: GOLD, w: 600, stroke: false });
         // lift shaft and the pneumatic tube
-        R(c, FL.pad, FL.roof - 2, FL.shaft, lobby + 46 - FL.roof + 2, '#0e0e16');
-        R(c, FL.pad + 7, FL.roof - 2, 1, lobby + 46 - FL.roof + 2, '#24242e');
-        R(c, FL.pad + 15, FL.roof - 2, 3, lobby + 46 - FL.roof + 2, '#2a4a5a');
-        R(c, FL.pad + 16, FL.roof - 2, 1, lobby + 46 - FL.roof + 2, '#3a6a7a');
+        R(c, FL.pad, L.roof - 2, FL.shaft, lobby + 46 - L.roof + 2, '#0e0e16');
+        R(c, FL.pad + 7, L.roof - 2, 1, lobby + 46 - L.roof + 2, '#24242e');
+        R(c, FL.pad + 15, L.roof - 2, 3, lobby + 46 - L.roof + 2, '#2a4a5a');
+        R(c, FL.pad + 16, L.roof - 2, 1, lobby + 46 - L.roof + 2, '#3a6a7a');
         // trips: corridor → cabin → lobby and back; positions follow the phases
         const cx = L.couchX, cw = L.couchW, SHAFT_X = xL + 10, CORR = 6;
         const spot = (pl, seat) => pl === 'gone' ? x0 + 9 : pl === 'cooler' ? (seat < 0 ? x0 + 46 : x0 + 38 + seat * 9) : (seat < 0 ? cx + cw - 10 : cx + 6 + seat * 22);
@@ -996,6 +1021,11 @@ export function mountFloors(scene, overlay, onError) {
             : { x: cx + cw / 2, y: lobby + 47.2, text: 'кулер и диван', px: 3.7, color: 'rgba(230,230,245,0.6)' });
         // desks: the boss on top, then every cell
         const desks = [[built.boss, L.boss, built.boss.name]];
+        for (const h of built.heads) {
+            const g = L.cells.get(h.key);
+            if (g)
+                desks.push([h, g, h.name]);
+        }
         for (const fl of L.floors)
             for (const cell of fl.def.cells) {
                 const g = L.cells.get(cell.key);
@@ -1032,7 +1062,7 @@ export function mountFloors(scene, overlay, onError) {
                 labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 });
                 if (!p.waiting) {
                     labels.push({ x: geo.x + 2, y: iy + 7.3, text: p.model, px: 3.4, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : 'rgba(235,235,250,0.45)', align: 'left', w: 600 });
-                    const cost = p.boss ? st.producer.cost : p.agent.cost;
+                    const cost = p.boss ? (p.head ?? st.producer).cost : p.agent.cost;
                     banknote(c, geo.x + cwid - 9, iy + 7.6);
                     labels.push({ x: geo.x + cwid - 10, y: iy + 7.3, text: money(cost), px: 3.4, color: GOLD, align: 'right', w: 600 });
                 }

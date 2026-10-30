@@ -31,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(HERE, 'web')
 CLAUDE_DIR = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
 PROJECTS = os.path.join(CLAUDE_DIR, 'projects')
+SESSIONS_DIR = os.path.join(CLAUDE_DIR, 'sessions')  # живые процессы Claude Code: id журнала ↔ id в приложении
 DATA = os.path.join(CLAUDE_DIR, 'agent-office')  # офисы папок; меняется флагом --data
 SHOTS = os.path.expanduser('~/Pictures/Agent Office')  # скриншоты офиса; меняется флагом --shots
 SHOT_LIMIT = 64 * 1024 * 1024
@@ -65,6 +66,9 @@ PRICES = {
     'gpt-5': (1.25, 10.0, 0.125),
 }
 LOCK = threading.Lock()  # журналы дочитываются по одному
+LINKED_RE = re.compile(r'(\S+) = (local_[0-9a-f-]+) \(')
+BACKGROUND_RE = re.compile(r'^Background \(from the session that started this one\)', re.M)
+MARKS = '①②③④⑤⑥⑦⑧⑨'
 
 
 def ms(ts):
@@ -325,7 +329,10 @@ class Tail:
         self.prompt = ''
         self.cwd = ''
         self.home = ''         # папка, где сессию открыли
+        self.branch = ''
         self.roster = {}       # агенты, доступные сессии: тип → описание
+        self.linked = {}       # сессии, которые эта породила через приложение: local_id → имя
+        self.child = False     # сессию породила другая: в первом запросе её вводная
         self.events = []       # [(at, text)]
         self.cost = 0.0
         self.daily = {}        # локальная дата → $, последние два дня
@@ -383,11 +390,13 @@ class Tail:
             self.last = max(self.last, at)
         self.cwd = d.get('cwd') or self.cwd
         self.home = self.home or home_of(self.cwd)
+        self.branch = d.get('gitBranch') or self.branch
         msg = d.get('message') or {}
         content = msg.get('content') if isinstance(msg, dict) else None
         if kind == 'user':
             # новый запрос или результат инструмента — ход продолжается
             self.busy = True
+            self.note_links(content)
             if isinstance(content, str) and not d.get('isMeta'):
                 self.activity, self.activity_at = 'думает', at
             return
@@ -406,6 +415,16 @@ class Tail:
         if len(self.events) > LOG_MAX:
             self.events = self.events[-LOG_MAX:]
         self.busy = msg.get('stop_reason') != 'end_turn' or bool(uses)
+
+    def note_links(self, content):
+        """Приложение дописывает в запрос, кого эта сессия породила, а породившей — вводную."""
+        # результаты инструментов не считаются: там эти фразы могут быть процитированы
+        texts = [content] if isinstance(content, str) else [b.get('text', '') for b in content or [] if isinstance(b, dict) and b.get('type') == 'text']
+        for text in texts:
+            if BACKGROUND_RE.search(text):
+                self.child = True
+            if 'Linked sessions now' in text:
+                self.linked = {m.group(2): m.group(1) for m in LINKED_RE.finditer(text)}
 
     def pay(self, model, usage, at):
         usd = message_cost(model, usage)
@@ -1645,7 +1664,7 @@ def session_files():
 
 def project_name(pdir, cwd):
     if cwd:
-        return folder_name(cwd) or cwd
+        return folder_name(home_of(cwd)) or cwd
     return os.path.basename(pdir).split('-')[-1]
 
 
@@ -1686,18 +1705,73 @@ def agents_of(pdir, sid, now_ms):
     return agents
 
 
+def title_of(t, sid):
+    return t.title or clip(t.prompt, 50) or sid[:8]
+
+
+def live_ids():
+    """Кто сейчас запущен: id в приложении → id журнала. Рядом лежат *.key с токенами — их не трогаем."""
+    out = {}
+    for name in names_in(SESSIONS_DIR):
+        if name.endswith('.json'):
+            d = read_json(os.path.join(SESSIONS_DIR, name))
+            if isinstance(d, dict) and d.get('hostSessionId') and d.get('sessionId'):
+                out[d['hostSessionId']] = d['sessionId']
+    return out
+
+
+def claude_tails():
+    """Сессии Claude за сутки: id → (хвост, папка журналов, mtime)."""
+    return {sid: (tail(path), pdir, mtime) for mtime, sid, pdir, path in session_files()}
+
+
+def task_tree(tails):
+    """Родитель каждой сессии. Связь — заметка приложения в журнале родителя;
+    ребёнок, чей родитель уже закрыт, пристаёт к последней чужой сессии своей папки."""
+    hosts = live_ids()
+    parent = {}
+    for sid, (t, _, _) in tails.items():
+        for host in t.linked:
+            kid = hosts.get(host)
+            if kid in tails and kid != sid and kid not in parent:
+                parent[kid] = sid
+    for sid, (t, _, _) in tails.items():
+        if not t.child or sid in parent:
+            continue
+        others = [(o.last, s) for s, (o, _, _) in tails.items() if s != sid and not o.child and o.home == t.home and s not in parent]
+        if others:
+            parent[sid] = max(others)[1]
+    return parent
+
+
+def root_of(sid, parent):
+    seen = {sid}
+    while sid in parent and parent[sid] not in seen:
+        sid = parent[sid]
+        seen.add(sid)
+    return sid
+
+
+def task_of(sid, tails, parent):
+    """Сессии задачи: корень, дальше порождённые в порядке старта."""
+    root = root_of(sid, parent)
+    kids = sorted((s for s in tails if s != root and root_of(s, parent) == root), key=lambda s: tails[s][0].first)
+    return [root] + kids
+
+
 def sessions():
     now = time.time()
     out = []
-    for mtime, sid, pdir, path in session_files():
-        t = tail(path)
+    tails = claude_tails()
+    parent = task_tree(tails)
+    for sid, (t, pdir, mtime) in tails.items():
         live = now - mtime < LIVE_S
         agents = agents_of(pdir, sid, now * 1000)
         working = sum(a['isWorking'] for a in agents) + (1 if live and t.busy else 0)
         out.append({
             'id': sid,
             'provider': 'claude',
-            'title': t.title or clip(t.prompt, 50) or sid[:8],
+            'title': title_of(t, sid),
             'project': project_name(pdir, t.cwd),
             'at': int(mtime * 1000),
             'isLive': live,
@@ -1707,6 +1781,9 @@ def sessions():
             'today': round(today_cost(t) + sum(a['today'] for a in agents), 2),
             'folder': t.home,
             'hasOffice': bool(t.home) and os.path.exists(office_path(t.home)),
+            'task': root_of(sid, parent),
+            'parent': parent.get(sid, ''),
+            'branch': t.branch,
         })
     out += codex_sessions(now)
     out.sort(key=lambda s: s['at'], reverse=True)
@@ -1798,6 +1875,9 @@ def codex_sessions(now):
             'today': round(today_cost(t) + sum(a['today'] for a in agents), 2),
             'folder': t.home,
             'hasOffice': False,
+            'task': sid,
+            'parent': '',
+            'branch': '',
         })
     return out
 
@@ -1821,9 +1901,10 @@ def session_view(office, roster, called):
     return office
 
 
-def office_for(t, called=()):
+def office_for(t, called=(), roster=None):
+    roster = t.roster if roster is None else roster
     saved = load_office(t.home) if t.home else None
-    office = session_view(saved, t.roster, called) if saved else auto_office(t.home or '?', t.roster)
+    office = session_view(saved, roster, called) if saved else auto_office(t.home or '?', roster)
     office['saved'] = bool(saved)
     office['job'] = job_view(t.home) if t.home else None
     office['generating'] = bool(office['job']) and office['job']['status'] == 'running'
@@ -1837,40 +1918,67 @@ def find_tail(sid):
     return None
 
 
-def room(t, agents, busy, office):
-    """Состояние офиса сессии: руководитель, агенты, общий журнал."""
-    log = [(at, 'producer', text) for at, text in t.events]
+def head_of(t, sid, live, busy):
+    """Руководитель сессии: то же, что producer, плюс кто он."""
+    return {'id': sid, 'title': title_of(t, sid), 'isLive': live, 'isBusy': busy, 'activity': t.activity if busy else '',
+            'at': t.activity_at, 'calls': t.calls, 'cost': round(t.cost, 4), 'model': t.model, 'tool': t.tool, 'branch': t.branch, 'since': t.first}
+
+
+def room(tails, agents, office, heads):
+    """Состояние офиса задачи: руководители её сессий, агенты, общий журнал.
+    Когда сессий несколько, записи помечены номером сессии: ① корень, ② первая порождённая."""
+    mark = (lambda i: MARKS[min(i, len(MARKS)) - 1] + ' ') if len(heads) > 1 else (lambda i: '')
+    log = []
+    for i, t in enumerate(tails, 1):
+        log += [(at, 'producer', mark(i) + text) for at, text in t.events]
     for a in agents:
-        log.append((a['startedAt'], a['type'], 'взял задачу: ' + a['desc']))
-        log += [(at, a['type'], text) for at, text in a['events']]
+        m = mark(a['session'])
+        log.append((a['startedAt'], a['type'], m + 'взял задачу: ' + a['desc']))
+        log += [(at, a['type'], m + text) for at, text in a['events']]
         if not a['isWorking']:
-            log.append((a['endedAt'], a['type'], 'сдал работу'))
+            log.append((a['endedAt'], a['type'], m + 'сдал работу'))
     log.sort(key=lambda x: x[0])
     for a in agents:
         del a['events']
+    head = heads[0]
     return {
         'agents': agents,
-        'producer': {'isBusy': busy, 'activity': t.activity if busy else '', 'at': t.activity_at, 'calls': t.calls, 'cost': round(t.cost, 4), 'model': t.model, 'tool': t.tool},
-        'cost': round(t.cost + sum(a['cost'] for a in agents), 4),
+        'producer': {k: head[k] for k in ('isBusy', 'activity', 'at', 'calls', 'cost', 'model', 'tool')},
+        'sessions': heads,
+        'cost': round(sum(h['cost'] for h in heads) + sum(a['cost'] for a in agents), 4),
         'office': office,
         'log': [{'at': at, 'who': who, 'text': clip(text)} for at, who, text in log[-LOG_MAX:]],
-        'since': t.first,
+        'since': tails[0].first,
     }
 
 
 def state(sid):
     now = time.time()
-    for mtime, s, pdir, path in session_files():
-        if s == sid:
-            t = tail(path)
-            agents = agents_of(pdir, sid, now * 1000)
-            return room(t, agents, t.busy and now - mtime < LIVE_S, office_for(t, [a['type'] for a in agents]))
+    tails = claude_tails()
+    if sid in tails:
+        members = task_of(sid, tails, task_tree(tails))
+        heads, agents, roster, chain = [], [], {}, []
+        for i, s in enumerate(members, 1):
+            t, pdir, mtime = tails[s]
+            live = now - mtime < LIVE_S
+            heads.append(head_of(t, s, live, t.busy and live))
+            own = agents_of(pdir, s, now * 1000)
+            for a in own:
+                a['session'] = i
+            agents += own
+            roster.update(t.roster)
+            chain.append(t)
+        agents.sort(key=lambda a: a['startedAt'])
+        return room(chain, agents, office_for(chain[0], [a['type'] for a in agents], roster), heads)
     mains, kids = codex_threads(now)
     t = mains.get(sid)
     if t is None:
         return None
     agents = codex_agents(kids.get(t.thread, []), now * 1000)
-    return room(t, agents, t.busy and now * 1000 - t.last < LIVE_S * 1000, codex_office(t, agents))
+    for a in agents:
+        a['session'] = 1
+    live = now * 1000 - t.last < LIVE_S * 1000
+    return room([t], agents, codex_office(t, agents), [head_of(t, sid, live, t.busy and live)])
 
 
 def shot_name(raw):

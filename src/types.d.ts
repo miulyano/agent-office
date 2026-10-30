@@ -12,15 +12,19 @@ export type Agent = {
   tool: string
   at: number
   finished: boolean
+  session: number   // номер сессии задачи: 1 — корень
 }
 
 export type LogLine = { at: number; who: string; text: string }
 
 export type Producer = { isBusy: boolean; activity: string; at: number; calls: number; cost: number; model: string; tool: string }
+// руководитель одной сессии задачи; первый — корень, остальные порождены приложением
+export type Head = Producer & { id: string; title: string; isLive: boolean; branch: string; since: number }
 
 export type Studio = {
   agents: Agent[]
   producer: Producer
+  sessions: Head[]
   cost: number
   log: LogLine[]
   since: number
