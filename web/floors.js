@@ -584,14 +584,15 @@ const GLYPH = {
     lift: ['#####', '#.#.#', '#.#.#', '#.#.#', '#####'], home: ['..#..', '.###.', '#####', '.#.#.', '.#.#.'], rest: ['..##.', '..#.#', '..#..', '###..', '##...'],
 };
 const ICON_COLOR = { clock: '#bfe3ff', home: '#e0a070', read: '#7fdcff', edit: '#ffd060', write: '#8af0a0', grep: '#ffa070', bash: '#60ff90', web: '#9ab8ff', phone: '#ff8ac8', skill: '#ffd060', tool: '#d8d8f0', think: '#d8d8f0', coffee: '#e0b080', done: '#8af0a0', sleep: '#a0a8d0', walk: '#d8d8f0', lift: '#d8d8f0', rest: '#c8a0ff' };
-function glyph(c, name, x, y) {
+const DIM = 'rgba(235,235,250,0.45)'; // icons and figures of someone not at work
+function glyph(c, name, x, y, color = ICON_COLOR[name]) {
     const g = GLYPH[name];
     if (!g)
         return;
     R(c, x - 1, y - 1, 7, 7, 'rgba(10,10,20,0.55)');
     g.forEach((row, j) => { for (let i = 0; i < 5; i++)
         if (row[i] === '#')
-            R(c, x + i, y + j, 1, 1, ICON_COLOR[name]); });
+            R(c, x + i, y + j, 1, 1, color); });
 }
 function banknote(c, x, y) { R(c, x, y, 7, 5, '#1f6a32'); R(c, x + 1, y + 1, 5, 3, '#4cb860'); R(c, x + 3, y + 1, 1, 3, '#1f6a32'); R(c, x + 2, y + 2, 3, 1, '#1f6a32'); }
 function coin(c, x, y) { R(c, x + 1, y, 2, 4, '#c08a10'); R(c, x, y + 1, 4, 2, '#c08a10'); R(c, x + 1, y + 1, 2, 2, GOLD); }
@@ -1074,20 +1075,25 @@ export function mountFloors(scene, overlay, onError) {
                 const moving = m?.trip && t - m.trip.t0 < WALK;
                 const icon = moving ? (tripPhase(m.trip.from === 'desk', (t - m.trip.t0) / WALK).name === 'ride' ? 'lift' : 'walk') : d.place === 'couch' ? 'rest' : d.icon;
                 const text = moving ? (m.trip.to === 'desk' ? 'идёт к столу' : m.trip.to === 'gone' ? 'уходит домой' : 'идёт в холл') : d.text;
+                // icons and figures glow only while at work
                 if (icon)
-                    glyph(c, icon, geo.x + 2, iy + 1.5);
-                // the status text in its icon's colour; the time apart, light blue after a small clock
-                const timeW = d.time && !moving ? d.time.length * 2.3 + 8 : 0;
-                labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 - timeW });
-                if (timeW) {
-                    glyph(c, 'clock', geo.x + cwid - timeW + 1, iy + 1.5);
-                    labels.push({ x: geo.x + cwid - 2, y: iy + 1, text: d.time, px: 3.4, color: TIME_COLOR, align: 'right', w: 600 });
-                }
+                    glyph(c, icon, geo.x + 2, iy + 1.5, work ? undefined : DIM);
+                labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 });
                 if (!p.waiting) {
-                    labels.push({ x: geo.x + 2, y: iy + 7.3, text: p.model, px: 3.4, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : 'rgba(235,235,250,0.45)', align: 'left', w: 600 });
+                    // second line: the clock and its time at the left, the banknote and the money at the right;
+                    // the model's name only where the cell is wide — a narrow desk shows it by the outfit
+                    const px = geo.wide ? 3.4 : 3.1;
+                    let lx = geo.x + 2;
+                    if (d.time && !moving) {
+                        glyph(c, 'clock', lx, iy + 7.8, work ? TIME_COLOR : DIM);
+                        labels.push({ x: lx + 7, y: iy + 7.5, text: d.time, px, color: work ? TIME_COLOR : DIM, align: 'left', w: 600 });
+                        lx += 7 + d.time.length * 2.2 + 4;
+                    }
+                    if (geo.wide)
+                        labels.push({ x: lx, y: iy + 7.3, text: p.model, px, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : DIM, align: 'left', w: 600 });
                     const cost = p.boss ? (p.head ?? st.producer).cost : p.agent.cost;
                     banknote(c, geo.x + cwid - 9, iy + 7.6);
-                    labels.push({ x: geo.x + cwid - 10, y: iy + 7.3, text: money(cost), px: 3.4, color: GOLD, align: 'right', w: 600 });
+                    labels.push({ x: geo.x + cwid - 10, y: iy + 7.5, text: money(cost), px, color: GOLD, align: 'right', w: 600 });
                 }
                 // salary drips in: while working, coins fly from the screen to the banknote
                 if (work) {
