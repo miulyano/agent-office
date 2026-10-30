@@ -547,8 +547,11 @@ PHRASES = {
     'art-director': 'Арт-директор', 'motion-designer': 'Аниматор', 'sound-designer': 'Звукорежиссёр',
     'cover-maker': 'Обложечник', 'subs-editor': 'Субтитровщик', 'qa-inspector': 'Контролёр', 'qa': 'Контролёр',
     'style-critic': 'Стилист', 'selection-critic': 'Отборщик', 'code-reviewer': 'Ревьюер', 'statusline-setup': 'Наладчик',
-    'guardian': 'Контролёр',
+    'guardian': 'Контролёр', 'general-purpose': 'Универсал', 'claude': 'Помощник', 'claude-code-guide': 'Проводник',
 }
+# Предмет на столе встроенного агента, когда офис собирают без модели
+GUEST_PROPS = {'Explore': 'binoculars', 'Plan': 'chart', 'general-purpose': 'layers', 'claude': 'tablet',
+               'claude-code-guide': 'books', 'statusline-setup': 'headphones'}
 WORDS = {
     'reviewer': 'Ревьюер', 'review': 'Ревьюер', 'builder': 'Сборщик', 'investigator': 'Сыщик', 'rescue': 'Спасатель',
     'analyst': 'Аналитик', 'director': 'Директор', 'camera': 'Оператор', 'copywriter': 'Копирайтер', 'maker': 'Мастер',
@@ -604,6 +607,12 @@ def zone_id(name):
     return re.sub(r'\W+', '-', str(name).strip().lower()).strip('-')
 
 
+def guests_of(types, lang, known=None):
+    """Встроенные агенты сессии: имя из сохранённого офиса, иначе без модели."""
+    known = known or {}
+    return {t: known.get(t) or {'name': local_name(t, lang), 'prop': GUEST_PROPS.get(t, 'cap')} for t in types if t in BUILTIN}
+
+
 def auto_office(folder, roster, shirt='#3b3f8f'):
     """Офис без модели: отделы по ходу работы, должности по-русски из названий агентов."""
     order = [k for k, _ in KINDS] + ['ПРОЧИЕ']
@@ -616,7 +625,7 @@ def auto_office(folder, roster, shirt='#3b3f8f'):
     rows = [{'id': 'главный', 'name': 'ГЛАВНЫЙ', 'desks': [boss]}] if not zones else []
     for i, name in enumerate(n for n in order if n in zones):
         rows.append({'id': zone_id(name), 'name': name, 'desks': ([boss] if i == 0 else []) + zones[name]})
-    return {'v': OFFICE_V, 'lang': LANG, 'folder': folder, 'title': 'ОФИС · ' + os.path.basename(folder).upper(), 'zones': rows, 'guests': {}}
+    return {'v': OFFICE_V, 'lang': LANG, 'folder': folder, 'title': 'ОФИС · ' + os.path.basename(folder).upper(), 'zones': rows, 'guests': guests_of(roster, LANG)}
 
 
 def upgrade(office):
@@ -1814,6 +1823,7 @@ def session_view(office, roster, called):
     if not roster:
         return office
     keep = set(roster) | set(called) | {'main'}
+    office['guests'] = guests_of(list(roster) + [t for t in called if t not in roster], office.get('lang', LANG), office.get('guests'))
     zones = [dict(z, desks=[d for d in z['desks'] if d['type'] in keep]) for z in office['zones']]
     total = sum(len(z['desks']) for z in office['zones'])
     office['zones'] = [z for z in zones if z['desks']]

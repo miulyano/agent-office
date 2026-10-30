@@ -63,7 +63,8 @@ function building(st: Studio, now: number): { boss: Person; floors: FloorDef[] }
   const boss: Person = { key: 'boss', name: deskName('main', office), grade: bg, model: bm, boss: true, look: lookOf('boss', mainDesk, '#3b3f8f', true) }
   const floors: FloorDef[] = office.zones
     .map(z => ({ name: z.name, home: 0, cells: z.desks.filter(d => d.type !== 'main').map(d => ({ key: d.type, name: d.short ?? d.name } as Cell)) }))
-  const free: FloorDef = { name: 'ФРИЛАНС', cells: [], free: true, home: 0 }
+  // built-in agents have no desk but keep a cell on the free-lance floor, waiting like a desk's owner
+  const free: FloorDef = { name: 'ФРИЛАНС', cells: Object.entries(office.guests).map(([t, g]) => ({ key: t, name: g.name } as Cell)), free: true, home: 0 }
   const gone = (a: Agent) => !a.isWorking && now - a.endedAt >= AWAY
   // at work first, then home, newest first: a desk goes to whoever is here
   const order = [...st.agents].sort((x, y) => Number(gone(x)) - Number(gone(y)) || y.startedAt - x.startedAt)
@@ -73,11 +74,12 @@ function building(st: Studio, now: number): { boss: Person; floors: FloorDef[] }
     const own = desk && desk.type !== 'main' ? desk : undefined
     const [grade, model] = gradeOf(a.model)
     const name = deskName(a.type, office)
-    // a desk's owner looks the same every time they are called
-    const person: Person = { key: a.id, name, grade, model, boss: false, agent: a, desk: !!own, look: lookOf(own ? own.type : a.id, own, GUESTS[a.type]?.shirt ?? '#5a6a8a') }
     const fi = own ? office.zones.findIndex(z => z.desks.includes(own)) : -1
     const floor = fi >= 0 ? floors[fi]! : free
-    const seat = own ? floor.cells.find(c => c.key === own.type) : undefined
+    const seat = floor.cells.find(c => c.key === (own ? own.type : a.type))
+    // the owner of a desk or of a guest cell looks the same every time they are called
+    const home = own ? own.type : seat ? a.type : undefined
+    const person: Person = { key: a.id, name, grade, model, boss: false, agent: a, desk: !!home, look: lookOf(home ?? a.id, own, GUESTS[a.type]?.shirt ?? '#5a6a8a') }
     if (seat && !seat.person) { seat.person = person; if (gone(a)) floor.home++; continue }
     if (gone(a)) {
       // a copy that went home: its desk is taken or it is a free-lancer
@@ -95,7 +97,7 @@ function building(st: Studio, now: number): { boss: Person; floors: FloorDef[] }
   for (const fl of floors) for (const cell of fl.cells) {
     if (cell.person) continue
     const desk = deskOf(office, cell.key)
-    cell.person = { key: 'wait:' + cell.key, name: cell.name, grade: 'middle', model: '', boss: false, desk: true, waiting: true, look: lookOf(cell.key, desk, '#5a6a8a') }
+    cell.person = { key: 'wait:' + cell.key, name: cell.name, grade: 'middle', model: '', boss: false, desk: true, waiting: true, look: lookOf(cell.key, desk, GUESTS[cell.key]?.shirt ?? '#5a6a8a') }
   }
   if (free.cells.length || free.home) floors.push(free)
   return { boss, floors: floors.filter(f => f.cells.length || f.home) }
@@ -680,6 +682,9 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     drawCooler(c, room, x0 + 22, lobby + 46)
     drawCouch(c, room, cx, lobby + 46, cw)
     let lounging = 0, atCooler = 0, overflow = 0
+    // a name under everyone in the lounge, on two staggered lines so neighbours do not collide; free-lancers are tagged
+    const tag = (p: Person, x: number, row: number, align: CanvasTextAlign) =>
+      labels.push({ x, y: lobby + 47.2 + row * 4.2, text: p.desk ? p.name : p.name + ' · фриланс', px: 3.4, color: p.desk ? '#ffffff' : '#d8dcff', align, maxw: 43 })
     for (const p of everyone) {
       const m = memo.get(p.key)!
       if (m.trip && t - m.trip.t0 < WALK) continue
@@ -687,18 +692,19 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
         atCooler++
         if (m.seat < 0) { overflow++; continue }
         blit(c, sprite(f, 'standDrink', 0, p.grade, p.look, false), x0 + 38 + m.seat * 9, lobby + 46, true, true)
+        tag(p, x0 + 44, m.seat, 'right')
       } else if (m.place === 'couch') {
         lounging++
         if (m.seat < 0) { overflow++; continue }
         blit(c, sprite(f, 'sit', 0, p.grade, p.look, false), cx + 6 + m.seat * 22, lobby + 48 - f.shin, false, false)
+        tag(p, cx + 13 + m.seat * 22, m.seat % 2, 'center')
       }
     }
     if (atCooler) bubbles.push({ icon: 'coffee', x: x0 + 42, y: lobby + 21 })
     if (lounging) bubbles.push({ icon: 'rest', x: cx + cw / 2, y: lobby + 21 })
     labels.push({ x: x0 + 2, y: lobby - FL.info + 2, text: `ЛАУНЖ · отдыхают ${lounging}${atCooler ? ' · у кулера ' + atCooler : ''}`, px: 3.9, color: 'rgba(255,255,255,0.9)', w: 600, align: 'left' })
-    labels.push(overflow
-      ? { x: cx + cw, y: lobby + 47.2, text: `+${overflow} мест не хватило`, px: 3.7, color: '#ffffff', align: 'right' }
-      : { x: cx + cw / 2, y: lobby + 47.2, text: 'кулер и диван', px: 3.7, color: 'rgba(230,230,245,0.6)' })
+    if (overflow) labels.push({ x: cx + cw, y: lobby + 47.2, text: `+${overflow} мест не хватило`, px: 3.7, color: '#ffffff', align: 'right' })
+    else if (!lounging && !atCooler) labels.push({ x: cx + cw / 2, y: lobby + 47.2, text: 'кулер и диван', px: 3.7, color: 'rgba(230,230,245,0.6)' })
 
     // desks: the boss on top, then every cell
     const desks: Array<[Person | undefined, Geo, string]> = [[built.boss, L.boss, built.boss.name]]
