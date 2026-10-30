@@ -1087,9 +1087,6 @@ def read_stream(proc, prompt, job, got):
     try:
         proc.stdin.write(prompt)
         proc.stdin.close()
-    except (OSError, ValueError):
-        return
-    try:
         for raw in proc.stdout:
             got['tail'] = raw
             try:
@@ -1106,6 +1103,8 @@ def read_stream(proc, prompt, job, got):
                 got['answer'] = e
     except (OSError, ValueError):
         pass
+    finally:
+        proc.stdout.close()  # только здесь: чужой close ждал бы конца чтения
 
 
 def wait_for(proc, prompt, job):
@@ -1129,7 +1128,6 @@ def wait_for(proc, prompt, job):
     reader.join(2)  # труба могла остаться у того, кто сбежал из группы: ждать его незачем
     try:
         proc.wait(2)
-        proc.stdout.close()
     except (subprocess.SubprocessError, OSError, ValueError):
         pass
     return got
