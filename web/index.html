@@ -95,6 +95,10 @@
   .seg.prov button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 4px; line-height: 1.2; }
   .seg.prov small { font: 500 11px Menlo, monospace; opacity: .8; }
   .sess:hover { background: var(--floor); }
+  /* сессия роли эпика висит под своим оркестратором: отступ и уголок от него */
+  .sess .role { color: var(--gold); font: 600 11px Menlo, monospace; margin-right: 6px; }
+  .more { display: block; margin: -4px var(--px) 8px 26px; padding: 4px 10px; background: transparent; box-shadow: none; color: var(--muted); font: 500 12px Menlo, monospace; text-align: left; }
+  .more:hover { color: var(--text); }
   .sess.sel { --c: var(--gold); background: var(--floor); }
   .sess .t { display: flex; gap: 8px; align-items: center; font-weight: 600; }
   /* сессия, порождённая другой: под родителем, со сдвигом */
@@ -165,6 +169,7 @@ const titleEl = $('title'), list = $('sessions'), follow = $('follow'), total = 
 const PROVIDERS = { all: 'Все', claude: 'Claude', codex: 'Codex' }
 
 let sessions = []
+const opened = new Set()   // оркестраторы, у которых развёрнуты законченные роли
 let current = location.hash.slice(1)   // выбранная сессия живёт в адресе
 let live = null, lastText = '', lastDraw = 0
 let provider = 'all'
@@ -256,7 +261,7 @@ function drawList() {
     list.innerHTML = `<div class="empty">За сутки сессий${provider === 'all' ? '' : ' ' + PROVIDERS[provider]} не было.</div>`
     return
   }
-  const html = rows.map(s => {
+  const row = (s, n) => {
     const cls = s.working ? 'busy' : s.isLive ? 'live' : ''
     const work = s.working ? `в работе ${s.working}` : ago(s.at)
     const agents = s.agents ? ` · агентов ${s.agents}` : ''
@@ -265,9 +270,22 @@ function drawList() {
     // минуты, а не секунды: строка меняется редко, и клик не попадает в заменённую кнопку
     const worked = workedNow(s, Date.now()), time = worked >= 60000 ? ` · время ${span(worked)}` : ''
     const branch = s.kid && s.branch ? ` · <span class="br">${esc(s.branch)}</span>` : ''
+    // an epic's coordinator says its epic and how many roles it has; a role says its role and task
+    const epic = s.epic ? `<i class="role">эпик ${esc(s.epic)}${n ? ' · ролей ' + n : ''}</i>` : ''
+    const role = s.kid && s.role ? `<i class="role">${esc(s.role)}</i>` : ''
     return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}">
       <div class="t"><span class="d ${cls}"></span><span>${s.kid ? '↳ ' : ''}${esc(s.title)}</span></div>
-      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${time}${agents}${fon}${usd}</div></button>`
+      <div class="m">${epic}${role}<i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${time}${agents}${fon}${usd}</div></button>`
+  }
+  const groups = []
+  for (const s of rows) s.kid ? groups[groups.length - 1].kids.push(s) : groups.push({ root: s, kids: [] })
+  const html = groups.map(({ root, kids }) => {
+    // an epic's finished roles fold into «ещё N»: a long epic has dozens
+    const visible = root.epic && !opened.has(root.id) ? kids.filter(k => k.isLive || k.id === current) : kids
+    const more = kids.length - visible.length
+    const toggle = !root.epic || !kids.length ? '' : more ? `<button class="more" data-more="${root.id}">└ ещё ${more} законченных</button>`
+      : opened.has(root.id) ? `<button class="more" data-more="${root.id}">└ свернуть</button>` : ''
+    return row(root, kids.length) + visible.map(k => row(k, 0)).join('') + toggle
   }).join('')
   // не трогать список без перемен: иначе клик попадает в уже заменённую кнопку
   if (html !== list.dataset.html) {
@@ -277,6 +295,8 @@ function drawList() {
 }
 
 list.addEventListener('click', e => {
+  const m = e.target.closest('.more')
+  if (m) { opened.has(m.dataset.more) ? opened.delete(m.dataset.more) : opened.add(m.dataset.more); drawList(); return }
   const b = e.target.closest('.sess')
   if (!b) return
   follow.checked = false

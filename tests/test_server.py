@@ -1,5 +1,6 @@
 import datetime
 import http.client
+import io
 import json
 import os
 import re
@@ -1557,6 +1558,269 @@ class SessionViewTest(TeamCase):
         self.office()
         _, path = self.team.session('s', {})
         self.assertEqual(len(self.seats(server.office_for(server.tail(path)))), 3)
+
+
+class EpicTest(unittest.TestCase):
+    """Эпик orchestrating-epics: мод координатора пишет view.json, офис рисует по нему, а не по ledger-у."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.saved = server.PROJECTS, server.EPICS, server.DATA
+        server.PROJECTS, server.EPICS, server.DATA = (os.path.join(self.dir.name, p) for p in ('projects', 'epics', 'data'))
+        server.TAILS.clear()
+        server.VIEW_CACHE.clear()
+        self.journal('-work-app', 'coord', assistant('c1', stop='end_turn'))
+        self.journal('-work-app--wt-p1', 'w1', assistant('w1', stop='end_turn'))
+        self.journal('-work-app--wt-p1-qa', 'q1', assistant('q1', stop='end_turn'))
+        self.journal('-work-app--wt-p2', 'w2', assistant('w2', [('Bash', {'command': 'npm test'})]))
+        self.journal('-work-app--wt-p2', 'w2-old', assistant('w2o', stop='end_turn'))
+        self.journal('-wt-p1-qa', 'q1-again', self.bg('q1a', '/wt/p1-qa'))
+        self.journal('-work-app', 'c1', assistant('c1x', stop='end_turn'))
+        self.journal('-work-app', 'abcdef12-3456-7890-abcd-ef1234567890', assistant('r1', [('Read', {'file_path': '/work/app/a.py'})]))
+        self.view()
+
+    def tearDown(self):
+        server.PROJECTS, server.EPICS, server.DATA = self.saved
+        server.TAILS.clear()
+        server.VIEW_CACHE.clear()
+        self.dir.cleanup()
+
+    def journal(self, project, sid, text, age=0):
+        os.makedirs(os.path.join(server.PROJECTS, project), exist_ok=True)
+        path = os.path.join(server.PROJECTS, project, sid + '.jsonl')
+        with open(path, 'w') as f:
+            f.write(text)
+        at = time.time() - age
+        os.utime(path, (at, at))
+
+    def bg(self, mid, cwd):
+        """A record of a background session (claude --bg), as an epic role is launched, in the folder cwd."""
+        return line(**dict(json.loads(assistant(mid, stop='end_turn')), cwd=cwd, sessionKind='bg'))
+
+    def view(self, raw=None, age=0, owner=False, name='e1', verdict='ACCEPT'):
+        """view.json, как его пишет мод: пакеты в порядке манифеста, роли с сессиями и job-состоянием."""
+        os.makedirs(os.path.join(server.EPICS, name), exist_ok=True)
+        path = os.path.join(server.EPICS, name, 'view.json')
+        now = time.time() - age
+        with open(path, 'w') as f:
+            f.write(raw if raw is not None else json.dumps({
+                'schema': 1, 'updated_at': iso(now), 'epic': 'e1', 'revision': 2, 'status': None,
+                'coordinator': {'session': 'coord', 'task_id': 'local_x', 'context_tokens': 147000, 'context_limit': 250000, 'owner_needed': owner},
+                'progress': {'landed': 1, 'total': 3},
+                'packages': [
+                    {'id': 'P1', 'attempt': 1, 'stage': 'INTEGRATED', 'gates': ['passed', 'passed', 'passed', 'next'], 'text': 'поп. 1 · gone · ACCEPT', 'is_open': False,
+                     'roles': [{'role': 'writer', 'session': 'w1', 'state': 'done', 'detail': ''}, {'role': 'qa', 'session': 'q1', 'state': 'done', 'detail': ''}]},
+                    {'id': 'P2', 'attempt': 2, 'stage': 'IMPLEMENTING', 'gates': ['next', 'ahead', 'ahead', 'ahead'], 'text': 'поп. 2 · active', 'is_open': True,
+                     'roles': [{'role': 'writer', 'session': 'w2', 'state': 'working', 'detail': 'clippy+fmt clean'}]},
+                    {'id': 'P3', 'attempt': 0, 'stage': 'PLANNED', 'gates': ['ahead'] * 4, 'text': 'не выдан', 'is_open': False, 'waits_for': ['P2'], 'roles': []},
+                ],
+                'release': {'from': 'refs/heads/epic/e1', 'to': 'refs/heads/main', 'state': 'packages'},
+                'critiques': [{'round': 1, 'verdict': verdict, 'roles': [{'role': 'critic', 'session': 'c1', 'state': 'done', 'detail': ''}]}],
+                'researchers': [{'question': 'Q1', 'dispatch': 'p2-a2', 'answered': False,
+                                 'roles': [{'role': 'researcher', 'session': 'abcdef12', 'state': 'working', 'detail': 'weighing two queues'}]}],
+                'sessions': [{'session': 'w2-old', 'role': 'writer', 'task': 'P2'}, {'session': 'w2', 'role': 'writer', 'task': 'P2'}],
+                'worktrees': [{'path': '/wt/p1-qa', 'role': 'qa', 'task': 'P1'}],
+            }))
+        os.utime(path, (now, now))
+
+    def floors(self, office):
+        return [(z['name'], z.get('note'), [d.get('short') or d['name'] for d in z['desks'] if d['type'] != 'main']) for z in office['zones']]
+
+    def strips(self, office):
+        return [z.get('strip') for z in office['zones']]
+
+    def test_every_floor_is_shown_landed_packages_share_one(self):
+        office = server.state('coord')['office']
+        self.assertEqual(office['title'], 'EPIC E1 · SPEC R2 · 1/3')
+        self.assertEqual(office['epic'], {'context': 147000, 'limit': 250000})
+        self.assertEqual(self.floors(office), [
+            ('СПЕКА', 'r1 ACCEPT', ['Критик r1']),
+            ('ИССЛЕДОВАНИЯ', 'Q1', ['Исследователь Q1']),
+            ('СДАНО', 'сдано 1 из 3', ['Писатель', 'Контролёр']),
+            ('P2', 'поп. 2 · active', ['Писатель', 'Контролёр']),
+            ('P3', 'ждёт P2', []),
+            ('ВЫПУСК', 'epic/e1 → main, когда влиты все пакеты', []),
+        ])
+        # only the work in progress is a full floor: the accepted spec, the landed packages, the plan and the release are bands
+        self.assertEqual(self.strips(office), [True, False, True, False, True, True])
+
+    def edit_view(self, change):
+        path = os.path.join(server.EPICS, 'e1', 'view.json')
+        with open(path) as f:
+            view = json.load(f)
+        change(view)
+        self.view(raw=json.dumps(view))
+
+    def test_a_planned_package_says_what_it_waits_for(self):
+        self.edit_view(lambda v: v['packages'][2].update(waits_for=[]))
+        self.assertEqual(self.floors(server.state('coord')['office'])[4][:2], ('P3', 'можно выдавать'))
+        # a view written by an older mod has no waits_for: the package keeps the mod's own words
+        self.edit_view(lambda v: v['packages'][2].pop('waits_for'))
+        self.assertEqual(self.floors(server.state('coord')['office'])[4][:2], ('P3', 'не выдан'))
+
+    def test_the_release_floor_says_what_is_left_before_the_epic_is_delivered(self):
+        floor = lambda: [(z['note'], z['track']) for z in server.state('coord')['office']['zones'] if z['name'] == 'ВЫПУСК']
+        self.edit_view(lambda v: v['release'].update(state='owner'))
+        self.assertEqual(floor(), [('ждёт «да» владельца: epic/e1 → main', [['пакеты', 'passed'], ['«да»', 'next']])])
+        self.edit_view(lambda v: v['release'].update(state='done'))
+        self.assertEqual(floor(), [('epic/e1 влит в main', [['пакеты', 'passed'], ['«да»', 'passed']])])
+        # no promotion declared: the packages land straight on the delivery ref, no release floor
+        self.edit_view(lambda v: v.update(release=None))
+        self.assertEqual(floor(), [])
+
+    def test_an_open_package_floor_stays_full_while_its_roles_rest(self):
+        self.edit_view(lambda v: v['packages'][1]['roles'][0].update(state='idle'))
+        self.assertEqual(self.strips(server.state('coord')['office'])[3], False)
+
+    def test_spec_floor_stays_until_the_critique_accepts(self):
+        for verdict in ('REJECT', None):
+            self.view(verdict=verdict)
+            office = server.state('coord')['office']
+            self.assertEqual((self.floors(office)[0], self.strips(office)[0]), (('СПЕКА', 'r1 %s' % (verdict or '…'), ['Критик r1']), False))
+
+    def test_each_floor_carries_its_track(self):
+        tracks = [z.get('track') for z in server.state('coord')['office']['zones']]
+        self.assertEqual(tracks, [[['r1', 'passed']], None, [['P1', 'passed']],
+                                  [['патч', 'next'], ['QA', 'ahead'], ['влит', 'ahead'], ['выкачен', 'ahead']],
+                                  [['патч', 'ahead'], ['QA', 'ahead'], ['влит', 'ahead'], ['выкачен', 'ahead']],
+                                  [['пакеты', 'next'], ['«да»', 'ahead']]])
+
+    def test_an_open_package_keeps_an_empty_desk_for_its_qa(self):
+        p2 = server.state('coord')['office']['zones'][3]
+        qa = [d for d in p2['desks'] if d.get('short') == 'Контролёр']
+        self.assertEqual([d['type'] for d in qa], ['e1/P2/qa'])
+        self.assertNotIn('e1/P2/qa', [a['type'] for a in server.state('coord')['agents']])
+
+    def test_role_sessions_hang_under_their_orchestrator_with_their_task(self):
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['coord']['parent'], rows['coord']['task'], rows['coord']['epic']), ('', 'coord', 'e1'))
+        self.assertEqual({sid: (rows[sid].get('parent'), rows[sid].get('role')) for sid in ('q1-again', 'w2-old', 'w1', 'q1', 'w2', 'c1', 'abcdef12-3456-7890-abcd-ef1234567890')}, {
+            'q1-again': ('coord', 'Контролёр P1'), 'w2-old': ('coord', 'Писатель P2'), 'w1': ('coord', 'Писатель P1'), 'q1': ('coord', 'Контролёр P1'), 'w2': ('coord', 'Писатель P2'),
+            'c1': ('coord', 'Критик r1'), 'abcdef12-3456-7890-abcd-ef1234567890': ('coord', 'Исследователь Q1'),
+        })
+        # the list groups a task by its root: the roles belong to the coordinator's
+        self.assertEqual({rows[sid]['task'] for sid in ('q1-again', 'w2-old', 'w1', 'q1', 'w2', 'c1')}, {'coord'})
+
+    def test_a_coordinator_started_by_another_session_is_the_root_of_its_epic(self):
+        self.journal('-work-app', 'starter', assistant('s1', stop='end_turn'))
+        self.journal('-work-app', 'coord', line(type='user', timestamp='2026-01-01T09:00:00Z', cwd='/work/app',
+                                                message={'role': 'user', 'content': 'Background (from the session that started this one):\nведи эпик'})
+                     + assistant('c1', stop='end_turn'))
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['coord']['parent'], rows['coord']['task'], rows['w2']['task']), ('', 'coord', 'coord'))
+
+    def test_only_a_background_session_launched_in_a_role_worktree_is_that_role(self):
+        # a chat opened in the worktree, or a session that went there with cd, is someone looking, not the role
+        self.journal('-wt-p1-qa', 'chat-there', assistant('ch', stop='end_turn').replace('/work/app', '/wt/p1-qa'))
+        self.journal('-work-app', 'bg-cd', self.bg('b1', '/work/app') + self.bg('b2', '/wt/p1-qa'))
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual([rows[s]['parent'] for s in ('q1-again', 'chat-there', 'bg-cd')], ['coord', '', ''])
+
+    def test_a_view_the_office_cannot_draw_costs_only_its_own_epic(self):
+        for raw in ('{"schema": 1, "coordinator": {"session": "w1"}, "packages": 5}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "release": {"state": ["x"]}}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "worktrees": [{"path": "/x", "role": ["qa"]}]}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "packages": [{"id": "P1", "gates": {"a": 1}}]}',
+                    '{"schema": 1, "x": %s}' % ('[' * 100000 + ']' * 100000)):
+            self.view(raw=raw, name='bad')
+            rows = {s['id']: s for s in server.sessions()}
+            self.assertEqual((rows['coord'].get('epic'), rows['w1'].get('epic'), rows['w1'].get('parent')), ('e1', None, 'coord'))
+            self.assertFalse(server.state('w1')['office'].get('epic'))
+            self.assertTrue(server.state('coord')['office'].get('epic'))
+
+    def test_a_fixed_view_is_picked_up_without_a_restart(self):
+        self.view(raw='{"schema": 1, "coordinator": {"session": "coord"}, "packages": 5}', age=60)
+        self.assertFalse(server.state('coord')['office'].get('epic'))
+        self.view()
+        self.assertTrue(server.state('coord')['office'].get('epic'))
+
+    def test_a_skipped_view_is_told_once_per_write(self):
+        path = os.path.join(server.EPICS, 'bad', 'view.json')
+        with mock.patch('sys.stderr', io.StringIO()) as err:
+            self.view(raw='{"schema": 1, "coordinator": {"session": "w1"}, "packages": 5}', name='bad', age=60)
+            for _ in range(3):
+                server.sessions()
+                server.state('coord')
+            self.assertEqual([l for l in err.getvalue().splitlines() if path in l], [mock.ANY])
+            self.view(raw='{не json', name='bad')
+            server.sessions()
+            self.assertEqual(len([l for l in err.getvalue().splitlines() if path in l]), 2)
+            self.assertNotIn(os.path.join(server.EPICS, 'e1'), err.getvalue())
+
+    def test_a_coordinator_listed_as_its_own_role_is_counted_once(self):
+        cost = server.state('coord')['cost']
+        self.edit_view(lambda v: v['packages'][1]['roles'].append({'role': 'qa', 'session': 'coord', 'state': 'working', 'detail': ''}))
+        st = server.state('coord')
+        self.assertNotIn('coord', [a['id'] for a in st['agents']])
+        self.assertEqual((st['cost'], st['producer']['waitingFor']), (cost, 'Исследователь Q1, Писатель P2'))
+        # the mod may write a session as its first 8 characters
+        long = 'abcdef12-3456-7890-abcd-ef1234567890'
+        self.edit_view(lambda v: v['coordinator'].update(session=long))
+        self.assertNotIn(long, [a['id'] for a in server.state(long)['agents']])
+
+    def test_a_worktree_in_the_coordinators_own_folder_takes_no_sessions(self):
+        self.journal('-work-app', 'bg-root', self.bg('b1', '/work/app'))
+        self.edit_view(lambda v: v['worktrees'].append({'path': '/work/app/', 'role': 'writer', 'task': 'P9'}))
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['bg-root']['parent'], rows['bg-root'].get('role')), ('', None))
+        self.assertEqual(rows['q1-again']['parent'], 'coord')
+
+    def test_journal_names_the_task_of_each_role_step(self):
+        st = server.state('coord')
+        desks = {d['type']: d for z in st['office']['zones'] for d in z['desks']}
+        self.assertEqual((desks['e1/P2/writer']['name'], desks['e1/P2/writer']['short']), ('Писатель P2', 'Писатель'))
+        self.assertIn('e1/P2/writer', {l['who'] for l in st['log']})
+
+    def test_roles_carry_their_job_state(self):
+        agents = {a['id']: a for a in server.state('coord')['agents']}
+        w2, r1 = agents['w2'], agents['abcdef12-3456-7890-abcd-ef1234567890']
+        self.assertEqual((w2['type'], w2['job'], w2['isWorking'], w2['activity']), ('e1/P2/writer', 'working', True, 'clippy+fmt clean'))
+        self.assertEqual((r1['type'], r1['job'], r1['isWorking']), ('e1/research/Q1', 'working', True))
+        self.assertEqual(agents['w1']['type'], 'e1/P1/writer')   # the landed P1's roles sit on the floor of landed packages
+
+    def test_idle_coordinator_waits_for_the_roles_at_work_and_calls_the_owner(self):
+        producer = server.state('coord')['producer']
+        self.assertEqual(producer['waitingFor'], 'Исследователь Q1, Писатель P2')
+        self.assertFalse(producer['owner'])
+        self.view(owner=True)
+        self.assertTrue(server.state('coord')['producer']['owner'])
+
+    def test_coordinator_is_live_while_its_mod_rewrites_the_view(self):
+        self.journal('-work-app', 'coord', assistant('c1', stop='end_turn'), age=20 * 60)
+        live = lambda: [s for s in server.sessions() if s['id'] == 'coord'][0]['isLive']
+        self.assertTrue(live())
+        self.view(age=5 * 60)
+        self.assertFalse(live())
+
+    def test_coordinator_stays_live_while_its_background_command_runs(self):
+        at = iso(time.time() - 20 * 60)
+        call = line(type='assistant', timestamp=at, cwd='/work/app', message={
+            'id': 'm1', 'model': 'claude-sonnet-5-5', 'stop_reason': 'tool_use', 'usage': {'input_tokens': 1, 'output_tokens': 1},
+            'content': [{'type': 'tool_use', 'id': 't1', 'name': 'Bash', 'input': {'command': 'make', 'description': 'сборка'}}]})
+        moved = line(type='user', timestamp=at, cwd='/work/app', toolUseResult={'backgroundTaskId': 'b1'}, message={
+            'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'moved to the background'}]})
+        self.journal('-work-app', 'coord', call + moved + assistant('c2', stop='end_turn', ts=at), age=20 * 60)
+        self.view(age=5 * 60)
+        st = server.state('coord')
+        self.assertTrue(st['office'].get('epic'))
+        self.assertEqual([s['status'] for s in st['shells']], ['running'])
+        self.assertTrue(st['sessions'][0]['isLive'])
+        self.assertTrue([s for s in server.sessions() if s['id'] == 'coord'][0]['isLive'])
+
+    def test_the_epic_office_counts_the_time_of_its_roles(self):
+        ask = lambda ts, cwd: line(type='user', timestamp=ts, cwd=cwd, message={'role': 'user', 'content': 'начни'})
+        self.journal('-work-app', 'coord', ask('2026-01-01T10:00:00Z', '/work/app') + assistant('c1', stop='end_turn', ts='2026-01-01T10:00:10Z'))
+        self.journal('-work-app--wt-p2', 'w2', ask('2026-01-01T10:01:00Z', '/wt/p2') + assistant('w2', stop='end_turn', ts='2026-01-01T10:02:00Z'))
+        st = server.state('coord')
+        self.assertEqual((st['worked'], st['workingSince']), (70000, 0))
+        self.assertNotIn('spans', st['agents'][0])
+
+    def test_role_session_and_a_broken_view_are_no_epic(self):
+        self.assertFalse(server.state('w2')['office'].get('epic'))
+        self.view(raw='{не json')
+        st = server.state('coord')
+        self.assertFalse(st['office'].get('epic'))
+        self.assertFalse(st['producer'].get('waitingFor'))
 
 
 class ClaudeEnvTest(unittest.TestCase):

@@ -40,6 +40,7 @@ CODEX_DIR = os.environ.get('CODEX_HOME') or os.path.expanduser('~/.codex')
 CODEX_SESSIONS = os.path.join(CODEX_DIR, 'sessions')
 CODEX_INDEX = os.path.join(CODEX_DIR, 'session_index.jsonl')  # названия тредов
 CODEX_ACCENT = '#4fb3c8'  # вывеска офиса Codex
+EPICS = os.path.join(CLAUDE_DIR, 'epics')  # эпики orchestrating-epics: <эпик>/view.json пишет мод координатора
 RECENT_S = 24 * 3600     # сессии в списке
 LIVE_S = 10 * 60         # тишина дольше — сессия считается остывшей
 AGENT_IDLE_S = 10 * 60   # агент без finished и без записей дольше — ушёл
@@ -374,6 +375,7 @@ class Tail:
         self.prompt = ''
         self.cwd = ''
         self.home = ''         # папка, где сессию открыли
+        self.launched = ''     # фоновая сессия (claude --bg): папка, где её запустили; у чата пусто
         self.branch = ''
         self.roster = {}       # агенты, доступные сессии: тип → описание
         self.linked = {}       # сессии, которые эта породила через приложение: local_id → имя
@@ -482,7 +484,9 @@ class Tail:
             self.first = self.first or at
             self.last = max(self.last, at)
         self.cwd = d.get('cwd') or self.cwd
-        self.home = self.home or home_of(self.cwd)
+        if not self.home:  # первая запись с папкой: где сессию открыли
+            self.home = home_of(self.cwd)
+            self.launched = self.cwd if d.get('sessionKind') == 'bg' else ''
         self.branch = d.get('gitBranch') or self.branch
         msg = d.get('message') or {}
         content = msg.get('content') if isinstance(msg, dict) else None
@@ -1977,8 +1981,19 @@ def sessions():
     now = time.time()
     out = []
     parent = task_tree(tails)
+    views = epic_views()
+    by_id, by_path = epic_children(views)
+    # a worktree that is a coordinator's own folder would take every background session started in the repo
+    homes = {tails[c][0].home for c in views if c in tails}
+    children = by_id, {p: hit for p, hit in by_path.items() if p not in homes}
+    roles = {sid: child_of(sid, t.launched, children) for sid, (t, _, _) in tails.items() if sid not in views}
+    # an epic is a task of its own: its coordinator is the root, its role sessions hang under it named by their task
+    parent.update({sid: hit[0] for sid, hit in roles.items() if hit})
+    for sid in views:
+        parent.pop(sid, None)
     for sid, (t, pdir, mtime) in tails.items():
-        live = now - mtime < LIVE_S
+        # координатор эпика молчит, пока ждёт роли, но жив, пока его мод переписывает view.json
+        live = now - mtime < LIVE_S or now - views.get(sid, (None, 0))[1] < VIEW_STALE_S
         agents = agents_of(pdir, sid, now * 1000)
         working = sum(a['isWorking'] for a in agents) + (1 if live and t.busy else 0)
         shells = t.running_shells(now * 1000)
@@ -2001,6 +2016,10 @@ def sessions():
             'parent': parent.get(sid, ''),
             'branch': t.branch,
         })
+        if sid in views:
+            out[-1]['epic'] = str(views[sid][0].get('epic', '?'))
+        elif roles.get(sid):
+            out[-1]['role'] = roles[sid][1]
     out += codex_sessions(now)
     out.sort(key=lambda s: s['at'], reverse=True)
     return out
@@ -2137,6 +2156,180 @@ def find_tail(sid):
     return None
 
 
+# ── Эпики orchestrating-epics: мод координатора пишет <эпик>/view.json, офис рисует его и ledger не разбирает ──
+VIEW_STALE_S = 3 * 60  # мод переписывает view.json раз в минуту; тишина дольше — процесс координатора не обновляет
+VIEW_CACHE = {}  # view.json → (mtime, разобранный вид или None)
+STAGES = ('патч', 'QA', 'влит', 'выкачен')  # PATCH_READY → REVIEWED → INTEGRATED → DEPLOYED: дорожка этажа пакета
+VERDICTS = {'ACCEPT': 'passed', 'REJECT': 'rejected'}
+# the epic branch going to the delivery ref: what the release floor says and its track, by the mod's release.state
+RELEASE = {
+    'packages': ('%s → %s, когда влиты все пакеты', [['пакеты', 'next'], ['«да»', 'ahead']]),
+    'owner': ('ждёт «да» владельца: %s → %s', [['пакеты', 'passed'], ['«да»', 'next']]),
+    'done': ('%s влит в %s', [['пакеты', 'passed'], ['«да»', 'passed']]),
+}  # раунд критики: нет вердикта — идёт
+ROLE_NAMES = {'writer': 'Писатель', 'qa': 'Контролёр', 'critic': 'Критик', 'researcher': 'Исследователь'}
+ROLE_PROPS = {'writer': 'tablet', 'qa': 'magnifier', 'critic': 'clipboard', 'researcher': 'books'}
+AT_WORK = ('working', 'idle')  # job-файл роли: работает или ждёт; done и stopped — ушла
+
+
+def epic_views():
+    """view.json, переписанные за сутки: CLI-сессия координатора → (вид, время записи)."""
+    out = {}
+    for path in glob.glob(os.path.join(glob.escape(EPICS), '*', 'view.json')):
+        mtime = mtime_of(path)
+        if time.time() - mtime >= RECENT_S:
+            continue
+        if VIEW_CACHE.get(path, (None,))[0] != mtime:
+            VIEW_CACHE[path] = (mtime, drawable(path))
+        view = VIEW_CACHE[path][1]
+        coord = view.get('coordinator') if view else None
+        session = coord.get('session') if isinstance(coord, dict) else None
+        if isinstance(session, str) and session:
+            out[session] = (view, mtime)
+    return out
+
+
+def drawable(path):
+    """view.json, который офис может нарисовать, иначе None: один кривой файл не должен стоить всего списка сессий."""
+    try:
+        view = read_json(path)
+        if not (isinstance(view, dict) and view.get('schema') == 1):
+            raise ValueError('не JSON со schema 1')
+        epic_children({'?': (view, 0)})  # every field the list and the floors read, read once here
+        return view
+    except Exception as e:  # wrong types, or JSON nested past the recursion limit
+        # called once per mtime: one line per write of the file, not per poll
+        sys.stderr.write('вид эпика %s пропущен: %s\n' % (path, str(e)[:200]))
+    return None
+
+
+def journal_of(session, files):
+    """Самый свежий журнал сессии; мод может записать и короткий id из 8 знаков."""
+    return next((f for f in files if f[1] == session or (len(session) == 8 and f[1].startswith(session))), None)
+
+
+def epic_children(views):
+    """Сессии ролей эпиков: id сессии (или 8 знаков, как пишет мод) → (CLI-сессия оркестратора, роль с задачей),
+    и так же по worktree роли. Этажи дают последнюю попытку, `sessions` вида — все запущенные, с прежними попытками
+    и возобновлёнными писателями; `worktrees` — тех, кого перезапустили в том же checkout и чей id ledger уже забыл."""
+    out, paths = {}, {}
+    for coord, (view, _) in views.items():
+        trees = view.get('worktrees')
+        for w in trees if isinstance(trees, list) else []:
+            if isinstance(w, dict) and isinstance(w.get('path'), str) and w.get('role') in ROLE_NAMES:
+                paths[w['path'].rstrip('/')] = (coord, '%s %s' % (ROLE_NAMES[w['role']], w.get('task', '?')))
+        launched = view.get('sessions')
+        for x in launched if isinstance(launched, list) else []:
+            if isinstance(x, dict) and isinstance(x.get('session'), str) and x.get('role') in ROLE_NAMES:
+                out[x['session']] = (coord, '%s %s' % (ROLE_NAMES[x['role']], x.get('task', '?')))
+        out.update({role['session']: (coord, who) for _, _, seats, *_ in epic_floors(view) for _, _, who, role in seats if role})
+    return out, paths
+
+
+def child_of(sid, launched, children):
+    """Оркестратор и роль сессии: по её id, а фоновой сессии — по worktree роли, где её запустили.
+    Чат, открытый в worktree, или сессия, зашедшая туда через cd, — не роль."""
+    # ponytail: a claude --bg launched by hand in a role worktree still counts as that role; the job file's intent would tell
+    by_id, by_path = children
+    return by_id.get(sid) or by_id.get(sid[:8]) or (by_path.get(launched.rstrip('/')) if launched else None)
+
+
+def epic_floors(view):
+    """Этажи эпика сверху вниз: спека, исследования, влитые пакеты одним этажом, остальные пакеты по манифесту, выпуск в ветку поставки.
+    Этаж — (имя, примечание, [(тип стола, должность, кто, роль или None — пустой стол)], дорожка [[подпись, passed|next|rejected|ahead]] или None,
+    идёт ли там работа: спека до ACCEPT, открытый вопрос, открытый пакет)."""
+    epic, floors = str(view.get('epic', '?')), []
+    items = lambda key: [x for x in view.get(key) or [] if isinstance(x, dict)]
+    # the coordinator listed as a role of its own (full id or the mod's 8 characters) heads the office, it is not its agent
+    coord = view.get('coordinator')
+    me = coord['session'] if isinstance(coord, dict) and isinstance(coord.get('session'), str) else ''
+    roles = lambda x: [r for r in x.get('roles') or [] if isinstance(r, dict) and isinstance(r.get('session'), str) and r.get('role') in ROLE_NAMES
+                       and r['session'] not in (me, me[:8])]
+    seats = lambda p: [('%s/%s/%s' % (epic, p.get('id'), r['role']), ROLE_NAMES[r['role']], '%s %s' % (ROLE_NAMES[r['role']], p.get('id')), r) for r in roles(p)]
+    crit = items('critiques')
+    if crit:
+        floors.append(('СПЕКА', ' · '.join('r%s %s' % (c.get('round'), c.get('verdict') or '…') for c in crit),
+                       [('%s/spec/r%s' % (epic, c.get('round')), 'Критик r%s' % c.get('round'), 'Критик r%s' % c.get('round'), r) for c in crit for r in roles(c)],
+                       [['r%s' % c.get('round'), VERDICTS.get(c.get('verdict'), 'next')] for c in crit], crit[-1].get('verdict') != 'ACCEPT'))
+    res = items('researchers')
+    if res:
+        floors.append(('ИССЛЕДОВАНИЯ', ' · '.join(str(r.get('question')) for r in res if not r.get('answered')),
+                       [('%s/research/%s' % (epic, q.get('question')), 'Исследователь %s' % q.get('question'), 'Исследователь %s' % q.get('question'), r)
+                        for q in res for r in roles(q)], None, not all(q.get('answered') for q in res)))
+    packages = items('packages')
+    landed = [p for p in packages if (p.get('gates') or [None] * 3)[2:3] == ['passed']]
+    if landed:
+        floors.append(('СДАНО', 'сдано %d из %d' % (len(landed), len(packages)), [s for p in landed for s in seats(p)],
+                       [[str(p.get('id')), 'passed'] for p in landed], False))
+    for p in packages:
+        if p in landed:
+            continue
+        pid, here = p.get('id'), seats(p)
+        # an open package keeps a desk for its QA, empty until the review starts: the floor shows who comes next
+        if p.get('is_open') and not any(r['role'] == 'qa' for *_, r in here):
+            here.append(('%s/%s/qa' % (epic, pid), ROLE_NAMES['qa'], '%s %s' % (ROLE_NAMES['qa'], pid), None))
+        gates = [g if g in ('passed', 'next', 'rejected') else 'ahead' for g in p.get('gates') or []]
+        note, waits = str(p.get('text') or ''), p.get('waits_for')
+        # an undispatched package says what holds it: a dependency not on the epic branch yet, or only the orchestrator
+        if not p.get('attempt') and isinstance(waits, list):
+            note = 'ждёт ' + ', '.join(map(str, waits)) if waits else 'можно выдавать'
+        floors.append((str(pid), note, here, [list(x) for x in zip(STAGES, gates)], bool(p.get('is_open'))))
+    rel = view.get('release')
+    if isinstance(rel, dict) and rel.get('state') in RELEASE:
+        note, track = RELEASE[rel['state']]
+        ref = lambda key: str(rel.get(key) or '?').removeprefix('refs/heads/')
+        floors.append(('ВЫПУСК', note % (ref('from'), ref('to')), [], [list(x) for x in track], False))
+    return floors
+
+
+def role_agent(kind, name, role, f, now_ms):
+    """Сессия роли как агент офиса. Работает ли она, говорит её job-файл, а не тишина в журнале."""
+    t = tail(f[3])
+    job = role.get('state') if isinstance(role.get('state'), str) else ''
+    detail = role.get('detail') if isinstance(role.get('detail'), str) else ''
+    working = job in AT_WORK if job else t.busy and now_ms / 1000 - f[0] < AGENT_IDLE_S
+    return {
+        'id': f[1], 'type': kind, 'desc': clip(t.title or name, 40), 'isWorking': working, 'job': job,
+        'activity': detail or t.activity or name, 'startedAt': t.first, 'endedAt': 0 if working else t.last,
+        'calls': t.calls, 'cost': round(t.cost, 4), 'today': round(today_cost(t), 4), 'model': t.model, 'tool': t.tool,
+        'at': t.activity_at or t.last, 'finished': not working, 'events': t.events, 'spans': t.worked(now_ms, working),
+    }
+
+
+def epic_room(sid, t, agents, live, busy, view, files, now_ms):
+    """Офис эпика: наверху оркестратор, ниже все этажи из view.json. Этаж без работы в ходу свёрнут в полоску со своей дорожкой."""
+    zones, seated = [], []
+    for i, (name, note, seats, track, at_work) in enumerate(epic_floors(view)):
+        desks, here = [], []
+        for kind, desk, who, role in seats:
+            # the journal names the task (Писатель P2), the desk keeps the short title
+            if role is None:
+                desks.append(dress({'type': kind, 'name': who, 'short': desk, 'prop': ROLE_PROPS['qa']}))
+                continue
+            f = journal_of(role['session'], files)
+            if f:
+                desks.append(dress({'type': kind, 'name': who, 'short': desk, 'prop': ROLE_PROPS[role['role']]}))
+                here.append((role_agent(kind, desk, role, f, now_ms), who))
+        zones.append({'id': 'epic-%d' % i, 'name': name, 'note': note, 'strip': not at_work, 'desks': desks, 'track': track})
+        seated += here
+    # the orchestrator's desk needs a zone even when the view has no floors
+    if not zones:
+        zones.append({'id': 'epic-cabinet', 'name': 'ЭПИК', 'note': 'нет работы в ходу', 'strip': True, 'desks': [], 'track': None})
+    zones[0]['desks'].insert(0, dress({'type': 'main', 'name': 'Оркестратор', 'prop': 'crown', 'shirt': '#3b3f8f'}))
+    coord = view.get('coordinator') if isinstance(view.get('coordinator'), dict) else {}
+    progress = view.get('progress') if isinstance(view.get('progress'), dict) else {}
+    title = 'EPIC %s · SPEC R%s · %s/%s' % (str(view.get('epic', '?')).upper(), view.get('revision', '?'), progress.get('landed', '?'), progress.get('total', '?'))
+    office = {'v': OFFICE_V, 'lang': LANG, 'folder': t.home or '?', 'title': title, 'zones': zones, 'guests': guests_of([a['type'] for a in agents], LANG), 'saved': True,
+              'job': None, 'generating': False, 'epic': {'context': coord.get('context_tokens'), 'limit': coord.get('context_limit')}}
+    everyone = agents + [a for a, _ in seated]
+    for a in everyone:
+        a['session'] = 1  # one head: the coordinator; its roles are agents of its office
+    st = room([t], everyone, office, [head_of(t, sid, live, busy)], now_ms)
+    st['producer']['waitingFor'] = ', '.join(who for a, who in seated if a['job'] == 'working')
+    st['producer']['owner'] = bool(coord.get('owner_needed'))
+    return st
+
+
 def head_of(t, sid, live, busy):
     """Руководитель сессии: то же, что producer, плюс кто он."""
     return {'id': sid, 'title': title_of(t, sid), 'isLive': live, 'isBusy': busy, 'activity': t.activity if busy else '',
@@ -2181,6 +2374,12 @@ def state(sid):
     tails = claude_tails()  # раньше часов: закрытие сессии отмечается при чтении
     now = time.time()
     if sid in tails:
+        view = epic_views().get(sid)
+        if view:
+            t, pdir, mtime = tails[sid]
+            live = now - mtime < LIVE_S
+            alive = live or now - view[1] < VIEW_STALE_S or t.running_shells(now * 1000) > 0
+            return epic_room(sid, t, agents_of(pdir, sid, now * 1000), alive, t.busy and live, view[0], session_files(), now * 1000)
         # офис задачи — у её корня; порождённая сессия по клику показывает только своё
         parent = task_tree(tails)
         members = task_of(sid, tails, parent) if root_of(sid, parent) == sid else [sid]
