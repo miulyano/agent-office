@@ -1078,7 +1078,9 @@ export function mountFloors(scene, overlay, onError) {
                 // icons and figures glow only while at work
                 if (icon)
                     glyph(c, icon, geo.x + 2, iy + 1.5, work ? undefined : DIM);
-                labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 });
+                // one who waits to be called has nothing to report: the empty desk says it
+                if (!p.waiting)
+                    labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 });
                 if (!p.waiting) {
                     // second line: the clock and its time at the left, the banknote and the money at the right;
                     // the model's name only where the cell is wide — a narrow desk shows it by the outfit
