@@ -180,7 +180,14 @@ function tripPhase(down: boolean, q: number): Phase {
   for (const [name, [a, b]] of Object.entries(P) as Array<[Phase['name'], readonly [number, number]]>) if (q >= a && q < b) return { name, k: (q - a) / (b - a) }
   return { name: down ? 'lobby' : 'floor', k: 1 }
 }
-type Trip = { from: Place; to: Place; t0: number; fromSeat: number; toSeat: number }
+type Trip = { from: Place; to: Place; t0: number; fromSeat: number; toSeat: number; lane: number }
+const rides = (tr: Trip) => tr.from === 'desk' || tr.to === 'desk'   // inside the lobby people walk
+function tripText(tr: Trip, riding: boolean): string {
+  if (tr.to === 'desk') return 'идёт к столу'
+  if (tr.to === 'gone') return 'уходит домой'
+  if (!rides(tr)) return tr.to === 'couch' ? 'идёт к дивану' : 'идёт к кулеру'
+  return riding ? 'едет в лаунж' : 'идёт в лаунж'
+}
 type Memory = { place: Place; seat: number; trip?: Trip; finished: boolean }
 
 // ── styles: office type and time of day ────────────────────────────────────
@@ -501,7 +508,7 @@ const RACK = { w: 24, h: 36, shelf: 5, steps: [0, 60, 180, 300, 600, 900, 1800] 
 const shellColor = (s: Shell) => s.status === 'failed' ? '#e05a5a' : s.status === 'completed' ? '#4ade80' : s.status === 'running' ? GOLD : '#8a8fb0'
 type Geo = { x: number; top: number; sx: number; sy: number; wide?: boolean }
 type FloorGeo = { def: FloorDef; y: number; h: number; rows: number }
-type Layout = { key: string; f: Fig; srv: number; cols: number; x0: number; width: number; height: number; roof: number; floors: FloorGeo[]; cells: Map<string, Geo>; boss: Geo; lobby: number; couchX: number; couchW: number; seats: number }
+type Layout = { key: string; f: Fig; srv: number; cols: number; x0: number; width: number; height: number; roof: number; floors: FloorGeo[]; cells: Map<string, Geo>; people: Map<string, Geo>; boss: Geo; lobby: number; couchX: number; couchW: number; seats: number }
 
 function layout(b: { heads: Person[]; floors: FloorDef[] }, room: Room, key: string, shells: boolean): Layout {
   const f = FIGS[room.fig]!
@@ -512,11 +519,12 @@ function layout(b: { heads: Person[]; floors: FloorDef[] }, room: Room, key: str
   let y = roof
   const bx = x0 + Math.floor((cols - 2) / 2) * FL.cw
   const boss: Geo = { x: bx, top: y + FL.info, sx: bx + 14, sy: y + FL.info + 46, wide: true }
-  const cells = new Map<string, Geo>()
+  // a cell is known by its desk's type, the one sitting there by the agent's id; trips and mail look up the person
+  const cells = new Map<string, Geo>(), people = new Map<string, Geo>()
   // the heads of started sessions: right of the boss, then left, as many as the room holds
   b.heads.forEach((h, i) => {
     const k = Math.floor(i / 2) + 1, x = i % 2 === 0 ? bx + 2 * FL.cw + (k - 1) * FL.cw : bx - k * FL.cw
-    if (x >= x0 && x + FL.cw <= x0 + cols * FL.cw) cells.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 })
+    if (x >= x0 && x + FL.cw <= x0 + cols * FL.cw) people.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 })
   })
   y += FL.rowH
   // the server room exists while there is something to show, right under the cabinet: no scrolling to it
@@ -530,20 +538,22 @@ function layout(b: { heads: Person[]; floors: FloorDef[] }, room: Room, key: str
     floors.push({ def, y, h, rows })
     def.cells.forEach((cell, i) => {
       const top = y + Math.floor(i / cols) * FL.rowH + FL.info, x = x0 + (i % cols) * FL.cw
-      cells.set(cell.key, { x, top, sx: x + 12, sy: top + 46 })
+      const geo = { x, top, sx: x + 12, sy: top + 46 }
+      cells.set(cell.key, geo)
+      if (cell.person) people.set(cell.person.key, geo)
     })
     y += h
   }
   const lobby = y + FL.info
   const couchX = x0 + 60, couchW = width - FL.pad - 12 - couchX
-  return { key, f, srv, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) }
+  return { key, f, srv, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, people, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) }
 }
 
 // ── the view ───────────────────────────────────────────────────────────────
 type Label = { x: number; y: number; text: string; px: number; color?: string; w?: number; align?: CanvasTextAlign; maxw?: number; stroke?: boolean; display?: boolean }
 type Flight = { key: string; t0: number; cost: number }
 
-export type FloorsView = { update(st: Studio): void; setStyle(office: string, time: string): void; picture(zoom?: number): HTMLCanvasElement }
+export type FloorsView = { update(st: Studio): void; reset(): void; setStyle(office: string, time: string): void; picture(zoom?: number): HTMLCanvasElement }
 
 export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement, onError: (e: unknown) => void): FloorsView {
   const ctx = scene.getContext('2d')!, octx = overlay.getContext('2d')!
@@ -566,8 +576,12 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     built = building(st, now)
     const room = OFFICES[style.office] ?? OFFICES.cozy!
     const shells = !!st.shells?.length
-    const key = style.office + '|' + shells + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + (c.person ? '+' : '')).join(',')).join('/')
-    if (L && L.key === key) return
+    const key = style.office + '|' + shells + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + '=' + (c.person?.key ?? '')).join(',')).join('/')
+    if (L && L.key === key) {
+      // the same seats, fresh people: money and who went home change without a new layout
+      L.floors.forEach((fl, i) => { fl.def = built!.floors[i]! })
+      return
+    }
     L = layout(built, room, key, shells)
     if (seats.couch.length !== L.seats) seats.couch = Array.from({ length: L.seats }, (_, i) => seats.couch[i] ?? null)
     if (scene.width !== L.width || scene.height !== L.height) { scene.width = L.width; scene.height = L.height; scene.style.aspectRatio = `${L.width} / ${L.height}`; sizeOverlay() }
@@ -585,6 +599,13 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     for (const list of [seats.couch, seats.cooler]) { const i = list.indexOf(key); if (i >= 0) list[i] = null }
   }
 
+  // the emptier of the two cabins; a trip keeps it, however the people around reshuffle
+  function freeLane(t: number): number {
+    const riders = [0, 0]
+    for (const { trip } of mem.values()) if (trip && t - trip.t0 < WALK && rides(trip)) riders[trip.lane]!++
+    return riders[1]! < riders[0]! ? 1 : 0
+  }
+
   // remember where everyone is; a change of place starts a trip
   function track(p: Person, d: Doing, now: number, t: number): Memory {
     let m = mem.get(p.key)
@@ -592,13 +613,13 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     if (!m) {
       m = { place: d.place, seat: lounge(d.place) ? takeSeat(d.place as 'couch' | 'cooler', p.key) : -1, finished: !!p.agent?.finished }
       // a fresh free-lancer walks in from the street; a desk's owner is already at the desk
-      if (p.agent && !p.desk && d.place === 'desk' && now - p.agent.startedAt < WALK * 1000) m.trip = { from: 'gone', to: 'desk', t0: p.agent.startedAt / 1000, fromSeat: -1, toSeat: -1 }
+      if (p.agent && !p.desk && d.place === 'desk' && now - p.agent.startedAt < WALK * 1000) m.trip = { from: 'gone', to: 'desk', t0: p.agent.startedAt / 1000, fromSeat: -1, toSeat: -1, lane: freeLane(t) }
       mem.set(p.key, m)
     } else if (m.place !== d.place && (!m.trip || t - m.trip.t0 >= WALK)) {
       const fromSeat = m.seat
       leaveSeat(p.key)
       const toSeat = lounge(d.place) ? takeSeat(d.place as 'couch' | 'cooler', p.key) : -1
-      m.trip = { from: m.place, to: d.place, t0: t, fromSeat, toSeat }
+      m.trip = { from: m.place, to: d.place, t0: t, fromSeat, toSeat, lane: freeLane(t) }
       m.place = d.place; m.seat = toSeat
     }
     if (m.trip && t - m.trip.t0 >= WALK) m.trip = undefined
@@ -624,6 +645,9 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
 
     // who is doing what
     const everyone: Person[] = [built.boss, ...built.heads, ...built.floors.flatMap(fl => fl.cells.flatMap(cell => cell.person ? [cell.person] : []))]
+    // a copy sent home loses its cell and never reaches track: its seat is freed here
+    const here = new Set(everyone.map(p => p.key))
+    for (const list of [seats.couch, seats.cooler]) list.forEach((k, i) => { if (k && !here.has(k)) list[i] = null })
     const now_ = new Map<string, Doing>(), memo = new Map<string, Memory>()
     for (const p of everyone) { const d = doing(p, st, now); now_.set(p.key, d); memo.set(p.key, track(p, d, now, t)) }
     // «в работе» как на сервере и в списке сессий: незавершённые агенты и занятый руководитель
@@ -739,8 +763,8 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     const walkers: Walker[] = [], cars: Car[] = []
     let doorOpen = false
     const frame = Math.floor(t * 7) % 4
-    everyone.forEach((p, idx) => {
-      const m = memo.get(p.key)!, trip = m.trip, cell = L!.cells.get(p.key)
+    everyone.forEach(p => {
+      const m = memo.get(p.key)!, trip = m.trip, cell = L!.people.get(p.key)
       if (!trip || !cell) return
       const q = Math.min(1, (t - trip.t0) / WALK)
       const toDesk = trip.to === 'desk', fromDesk = trip.from === 'desk'
@@ -750,20 +774,23 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
         if (trip.to === 'gone' && q > 0.6) doorOpen = true
         return
       }
-      const down = fromDesk, ph = tripPhase(down, q), k = ph.k, lane = idx % 2
+      const down = fromDesk, ph = tripPhase(down, q), k = ph.k, lane = trip.lane
       const place = down ? trip.to : trip.from, seat = down ? trip.toSeat : trip.fromSeat, sp = spot(place, seat)
       const rowCar = cell.top + 33, lobbyCar = lobby + 33
       if (ph.name === 'floor') {
         const from = cell.sx - 3, to = SHAFT_X, qq = down ? k : 1 - k
         walkers.push({ p, x: from + (to - from) * qq, y: cell.sy + CORR * Math.min(1, qq * 8), flip: down })
         if (down && k > 0.3) cars.push({ lane, y: lobbyCar + (rowCar - lobbyCar) * Math.min(1, (k - 0.3) / 0.65), toward: cell.top })
-        if (!down && k < 0.7) cars.push({ lane, y: rowCar + (lobbyCar - rowCar) * (k / 0.7) })
+        // the cabin arrives: doors open, the rider steps out, then it goes back down
+        if (!down && k < 0.25) cars.push({ lane, y: rowCar, open: true, door: cell.top })
+        else if (!down && k < 0.7) cars.push({ lane, y: rowCar + (lobbyCar - rowCar) * ((k - 0.25) / 0.45) })
       } else if (ph.name === 'board') {
         cars.push({ lane, y: down ? rowCar : lobbyCar, rider: p, open: true, door: down ? cell.top : lobby })
       } else if (ph.name === 'ride') {
         cars.push({ lane, y: down ? rowCar + (lobbyCar - rowCar) * k : lobbyCar + (rowCar - lobbyCar) * k, rider: p, toward: down ? lobby : cell.top })
       } else {
         const qq = down ? k : 1 - k
+        if (down && k < 0.25) cars.push({ lane, y: lobbyCar, open: true, door: lobby })   // the cabin arrives: doors open, the rider steps out
         const w: Walker = { p, x: SHAFT_X + (sp - SHAFT_X) * qq, y: lobby + 46 + CORR, flip: down ? sp < SHAFT_X : sp > SHAFT_X }
         if (place === 'gone') { if (down ? k > 0.7 : k < 0.3) doorOpen = true; if (down && k > 0.85) w.fade = (1 - k) / 0.15; if (!down && k < 0.15) w.fade = k / 0.15 }
         walkers.push(w)
@@ -805,7 +832,7 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
 
     // desks: the boss on top, then every cell
     const desks: Array<[Person | undefined, Geo, string]> = [[built.boss, L.boss, built.boss.name]]
-    for (const h of built.heads) { const g = L.cells.get(h.key); if (g) desks.push([h, g, h.name]) }
+    for (const h of built.heads) { const g = L.people.get(h.key); if (g) desks.push([h, g, h.name]) }
     for (const fl of L.floors) for (const cell of fl.def.cells) { const g = L.cells.get(cell.key); if (g) desks.push([cell.person, g, cell.name]) }
     for (const [p, geo, name] of desks) {
       const d = p ? now_.get(p.key)! : undefined, m = p ? memo.get(p.key)! : undefined
@@ -826,8 +853,9 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
       const cwid = geo.wide ? FL.cw * 2 : FL.cw, iy = geo.top - FL.info
       if (p && d) {
         const moving = m?.trip && t - m.trip.t0 < WALK
-        const icon = moving ? (tripPhase(m!.trip!.from === 'desk', (t - m!.trip!.t0) / WALK).name === 'ride' ? 'lift' : 'walk') : d.place === 'couch' ? 'rest' : d.icon
-        const text = moving ? (m!.trip!.to === 'desk' ? 'идёт к столу' : m!.trip!.to === 'gone' ? 'уходит домой' : 'идёт в холл') : d.text
+        const riding = !!moving && rides(m!.trip!) && tripPhase(m!.trip!.from === 'desk', (t - m!.trip!.t0) / WALK).name === 'ride'
+        const icon = moving ? (riding ? 'lift' : 'walk') : d.place === 'couch' ? 'rest' : d.icon
+        const text = moving ? tripText(m!.trip!, riding) : d.text
         // icons and figures glow only while at work
         if (icon) glyph(c, icon, geo.x + 2, iy + 1.5, work ? undefined : DIM)
         // one who waits to be called has nothing to report: the empty desk says it
@@ -885,7 +913,7 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     }
     // pneumatic mail: a finished job rises to the producer, a coin pops over the desk
     for (let i = flights.length - 1; i >= 0; i--) {
-      const fl = flights[i]!, q = (t - fl.t0) / 1.4, cell = L.cells.get(fl.key)
+      const fl = flights[i]!, q = (t - fl.t0) / 1.4, cell = L.people.get(fl.key)
       if (q >= 2 || !cell) { if (q >= 2 && t - fl.t0 > 3600) flights.splice(i, 1); continue }
       if (q < 1) { const y = cell.top + 26 + (L.boss.top + 26 - cell.top - 26) * q; R(c, FL.pad + 15, y, 3, 3, '#e0b030'); R(c, FL.pad + 16, y + 1, 1, 1, '#c03040') }
       else {
@@ -928,6 +956,8 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
 
   return {
     update(next: Studio) { st = next; relayout(Date.now()) },
+    // another session: nothing to remember, its people start where they are, without trips for what happened meanwhile
+    reset() { st = null; mem.clear(); seats.couch.fill(null); seats.cooler.fill(null); flights.length = 0 },
     setStyle(office: string, time: string) { style = { office, time }; L = null; relayout(Date.now()) },
     // this very frame, enlarged: pixels stay square, labels are drawn anew at the bigger size
     picture(zoom = 4) {

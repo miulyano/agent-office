@@ -176,6 +176,16 @@ function tripPhase(down, q) {
             return { name, k: (q - a) / (b - a) };
     return { name: down ? 'lobby' : 'floor', k: 1 };
 }
+const rides = (tr) => tr.from === 'desk' || tr.to === 'desk'; // inside the lobby people walk
+function tripText(tr, riding) {
+    if (tr.to === 'desk')
+        return 'идёт к столу';
+    if (tr.to === 'gone')
+        return 'уходит домой';
+    if (!rides(tr))
+        return tr.to === 'couch' ? 'идёт к дивану' : 'идёт к кулеру';
+    return riding ? 'едет в лаунж' : 'идёт в лаунж';
+}
 const FIGS = {
     chibi: { key: 'chibi', head: [10, 9], torso: [7, 6], thigh: 4, shin: 4, outline: '#1a1410', eyes: 'big', blush: true, hairRows: 3, bubble: 'round' },
     rpg: { key: 'rpg', head: [8, 8], torso: [7, 8], thigh: 5, shin: 5, outline: 'dark', eyes: 'tall', hairRows: 3, shade: 1, bubble: 'box' },
@@ -759,12 +769,13 @@ function layout(b, room, key, shells) {
     let y = roof;
     const bx = x0 + Math.floor((cols - 2) / 2) * FL.cw;
     const boss = { x: bx, top: y + FL.info, sx: bx + 14, sy: y + FL.info + 46, wide: true };
-    const cells = new Map();
+    // a cell is known by its desk's type, the one sitting there by the agent's id; trips and mail look up the person
+    const cells = new Map(), people = new Map();
     // the heads of started sessions: right of the boss, then left, as many as the room holds
     b.heads.forEach((h, i) => {
         const k = Math.floor(i / 2) + 1, x = i % 2 === 0 ? bx + 2 * FL.cw + (k - 1) * FL.cw : bx - k * FL.cw;
         if (x >= x0 && x + FL.cw <= x0 + cols * FL.cw)
-            cells.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 });
+            people.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 });
     });
     y += FL.rowH;
     // the server room exists while there is something to show, right under the cabinet: no scrolling to it
@@ -779,13 +790,16 @@ function layout(b, room, key, shells) {
         floors.push({ def, y, h, rows });
         def.cells.forEach((cell, i) => {
             const top = y + Math.floor(i / cols) * FL.rowH + FL.info, x = x0 + (i % cols) * FL.cw;
-            cells.set(cell.key, { x, top, sx: x + 12, sy: top + 46 });
+            const geo = { x, top, sx: x + 12, sy: top + 46 };
+            cells.set(cell.key, geo);
+            if (cell.person)
+                people.set(cell.person.key, geo);
         });
         y += h;
     }
     const lobby = y + FL.info;
     const couchX = x0 + 60, couchW = width - FL.pad - 12 - couchX;
-    return { key, f, srv, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
+    return { key, f, srv, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, people, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
 }
 export function mountFloors(scene, overlay, onError) {
     const ctx = scene.getContext('2d'), octx = overlay.getContext('2d');
@@ -808,9 +822,12 @@ export function mountFloors(scene, overlay, onError) {
         built = building(st, now);
         const room = OFFICES[style.office] ?? OFFICES.cozy;
         const shells = !!st.shells?.length;
-        const key = style.office + '|' + shells + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + (c.person ? '+' : '')).join(',')).join('/');
-        if (L && L.key === key)
+        const key = style.office + '|' + shells + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + '=' + (c.person?.key ?? '')).join(',')).join('/');
+        if (L && L.key === key) {
+            // the same seats, fresh people: money and who went home change without a new layout
+            L.floors.forEach((fl, i) => { fl.def = built.floors[i]; });
             return;
+        }
         L = layout(built, room, key, shells);
         if (seats.couch.length !== L.seats)
             seats.couch = Array.from({ length: L.seats }, (_, i) => seats.couch[i] ?? null);
@@ -838,6 +855,14 @@ export function mountFloors(scene, overlay, onError) {
                 list[i] = null;
         }
     }
+    // the emptier of the two cabins; a trip keeps it, however the people around reshuffle
+    function freeLane(t) {
+        const riders = [0, 0];
+        for (const { trip } of mem.values())
+            if (trip && t - trip.t0 < WALK && rides(trip))
+                riders[trip.lane]++;
+        return riders[1] < riders[0] ? 1 : 0;
+    }
     // remember where everyone is; a change of place starts a trip
     function track(p, d, now, t) {
         let m = mem.get(p.key);
@@ -846,14 +871,14 @@ export function mountFloors(scene, overlay, onError) {
             m = { place: d.place, seat: lounge(d.place) ? takeSeat(d.place, p.key) : -1, finished: !!p.agent?.finished };
             // a fresh free-lancer walks in from the street; a desk's owner is already at the desk
             if (p.agent && !p.desk && d.place === 'desk' && now - p.agent.startedAt < WALK * 1000)
-                m.trip = { from: 'gone', to: 'desk', t0: p.agent.startedAt / 1000, fromSeat: -1, toSeat: -1 };
+                m.trip = { from: 'gone', to: 'desk', t0: p.agent.startedAt / 1000, fromSeat: -1, toSeat: -1, lane: freeLane(t) };
             mem.set(p.key, m);
         }
         else if (m.place !== d.place && (!m.trip || t - m.trip.t0 >= WALK)) {
             const fromSeat = m.seat;
             leaveSeat(p.key);
             const toSeat = lounge(d.place) ? takeSeat(d.place, p.key) : -1;
-            m.trip = { from: m.place, to: d.place, t0: t, fromSeat, toSeat };
+            m.trip = { from: m.place, to: d.place, t0: t, fromSeat, toSeat, lane: freeLane(t) };
             m.place = d.place;
             m.seat = toSeat;
         }
@@ -883,6 +908,11 @@ export function mountFloors(scene, overlay, onError) {
         R(c, 0, height - FL.ground, width, 1, '#55556a');
         // who is doing what
         const everyone = [built.boss, ...built.heads, ...built.floors.flatMap(fl => fl.cells.flatMap(cell => cell.person ? [cell.person] : []))];
+        // a copy sent home loses its cell and never reaches track: its seat is freed here
+        const here = new Set(everyone.map(p => p.key));
+        for (const list of [seats.couch, seats.cooler])
+            list.forEach((k, i) => { if (k && !here.has(k))
+                list[i] = null; });
         const now_ = new Map(), memo = new Map();
         for (const p of everyone) {
             const d = doing(p, st, now);
@@ -1020,8 +1050,8 @@ export function mountFloors(scene, overlay, onError) {
         const walkers = [], cars = [];
         let doorOpen = false;
         const frame = Math.floor(t * 7) % 4;
-        everyone.forEach((p, idx) => {
-            const m = memo.get(p.key), trip = m.trip, cell = L.cells.get(p.key);
+        everyone.forEach(p => {
+            const m = memo.get(p.key), trip = m.trip, cell = L.people.get(p.key);
             if (!trip || !cell)
                 return;
             const q = Math.min(1, (t - trip.t0) / WALK);
@@ -1033,7 +1063,7 @@ export function mountFloors(scene, overlay, onError) {
                     doorOpen = true;
                 return;
             }
-            const down = fromDesk, ph = tripPhase(down, q), k = ph.k, lane = idx % 2;
+            const down = fromDesk, ph = tripPhase(down, q), k = ph.k, lane = trip.lane;
             const place = down ? trip.to : trip.from, seat = down ? trip.toSeat : trip.fromSeat, sp = spot(place, seat);
             const rowCar = cell.top + 33, lobbyCar = lobby + 33;
             if (ph.name === 'floor') {
@@ -1041,8 +1071,11 @@ export function mountFloors(scene, overlay, onError) {
                 walkers.push({ p, x: from + (to - from) * qq, y: cell.sy + CORR * Math.min(1, qq * 8), flip: down });
                 if (down && k > 0.3)
                     cars.push({ lane, y: lobbyCar + (rowCar - lobbyCar) * Math.min(1, (k - 0.3) / 0.65), toward: cell.top });
-                if (!down && k < 0.7)
-                    cars.push({ lane, y: rowCar + (lobbyCar - rowCar) * (k / 0.7) });
+                // the cabin arrives: doors open, the rider steps out, then it goes back down
+                if (!down && k < 0.25)
+                    cars.push({ lane, y: rowCar, open: true, door: cell.top });
+                else if (!down && k < 0.7)
+                    cars.push({ lane, y: rowCar + (lobbyCar - rowCar) * ((k - 0.25) / 0.45) });
             }
             else if (ph.name === 'board') {
                 cars.push({ lane, y: down ? rowCar : lobbyCar, rider: p, open: true, door: down ? cell.top : lobby });
@@ -1052,6 +1085,8 @@ export function mountFloors(scene, overlay, onError) {
             }
             else {
                 const qq = down ? k : 1 - k;
+                if (down && k < 0.25)
+                    cars.push({ lane, y: lobbyCar, open: true, door: lobby }); // the cabin arrives: doors open, the rider steps out
                 const w = { p, x: SHAFT_X + (sp - SHAFT_X) * qq, y: lobby + 46 + CORR, flip: down ? sp < SHAFT_X : sp > SHAFT_X };
                 if (place === 'gone') {
                     if (down ? k > 0.7 : k < 0.3)
@@ -1112,7 +1147,7 @@ export function mountFloors(scene, overlay, onError) {
         // desks: the boss on top, then every cell
         const desks = [[built.boss, L.boss, built.boss.name]];
         for (const h of built.heads) {
-            const g = L.cells.get(h.key);
+            const g = L.people.get(h.key);
             if (g)
                 desks.push([h, g, h.name]);
         }
@@ -1147,8 +1182,9 @@ export function mountFloors(scene, overlay, onError) {
             const cwid = geo.wide ? FL.cw * 2 : FL.cw, iy = geo.top - FL.info;
             if (p && d) {
                 const moving = m?.trip && t - m.trip.t0 < WALK;
-                const icon = moving ? (tripPhase(m.trip.from === 'desk', (t - m.trip.t0) / WALK).name === 'ride' ? 'lift' : 'walk') : d.place === 'couch' ? 'rest' : d.icon;
-                const text = moving ? (m.trip.to === 'desk' ? 'идёт к столу' : m.trip.to === 'gone' ? 'уходит домой' : 'идёт в холл') : d.text;
+                const riding = !!moving && rides(m.trip) && tripPhase(m.trip.from === 'desk', (t - m.trip.t0) / WALK).name === 'ride';
+                const icon = moving ? (riding ? 'lift' : 'walk') : d.place === 'couch' ? 'rest' : d.icon;
+                const text = moving ? tripText(m.trip, riding) : d.text;
                 // icons and figures glow only while at work
                 if (icon)
                     glyph(c, icon, geo.x + 2, iy + 1.5, work ? undefined : DIM);
@@ -1215,7 +1251,7 @@ export function mountFloors(scene, overlay, onError) {
         }
         // pneumatic mail: a finished job rises to the producer, a coin pops over the desk
         for (let i = flights.length - 1; i >= 0; i--) {
-            const fl = flights[i], q = (t - fl.t0) / 1.4, cell = L.cells.get(fl.key);
+            const fl = flights[i], q = (t - fl.t0) / 1.4, cell = L.people.get(fl.key);
             if (q >= 2 || !cell) {
                 if (q >= 2 && t - fl.t0 > 3600)
                     flights.splice(i, 1);
@@ -1282,6 +1318,8 @@ export function mountFloors(scene, overlay, onError) {
     requestAnimationFrame(frame);
     return {
         update(next) { st = next; relayout(Date.now()); },
+        // another session: nothing to remember, its people start where they are, without trips for what happened meanwhile
+        reset() { st = null; mem.clear(); seats.couch.fill(null); seats.cooler.fill(null); flights.length = 0; },
         setStyle(office, time) { style = { office, time }; L = null; relayout(Date.now()); },
         // this very frame, enlarged: pixels stay square, labels are drawn anew at the bigger size
         picture(zoom = 4) {

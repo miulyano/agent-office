@@ -301,6 +301,7 @@ function pick(id) {
   current = id
   history.replaceState(null, '', '#' + id)
   lastText = ''
+  floors.reset()
   drawList()
   pollState()
 }
