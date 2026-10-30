@@ -1792,7 +1792,9 @@ class TaskTest(unittest.TestCase):
         self.assertEqual([(a['id'], a['session']) for a in st['agents']], [('a1', 1), ('a2', 2)])
         self.assertEqual([s['id'] for s in st['sessions']], ['root', 'kid'])
         self.assertEqual(st['sessions'][1]['activity'], '$ ls')
-        self.assertEqual(server.state('kid')['sessions'][0]['id'], 'root')
+        kid = server.state('kid')  # по клику на порождённую — только её офис, без меток
+        self.assertEqual(([h['id'] for h in kid['sessions']], [a['id'] for a in kid['agents']]), (['kid'], ['a2']))
+        self.assertEqual(kid['log'][0]['text'], '$ ls')
         rows = {s['id']: s for s in server.sessions()}
         self.assertEqual((rows['kid']['task'], rows['kid']['project']), ('root', 'app'))
         self.assertEqual(rows['root']['task'], 'root')
@@ -1801,8 +1803,8 @@ class TaskTest(unittest.TestCase):
         self.journal('root', '/work/app', 'сделай')
         self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, agent='a2', ts='2026-01-01T10:05:00Z')
         self.journal('other', '/work/app', 'другое', ts='2026-01-01T10:06:00Z')
-        self.assertEqual([s['id'] for s in server.state('kid')['sessions']], ['other', 'kid'])
-        self.assertEqual(server.state('other')['sessions'][1]['id'], 'kid')
+        self.assertEqual([s['id'] for s in server.state('other')['sessions']], ['other', 'kid'])
+        self.assertEqual([s['id'] for s in server.state('kid')['sessions']], ['kid'])
         self.assertEqual([s['id'] for s in server.state('root')['sessions']], ['root'])
 
     def test_log_marks_whose_agent_it_was(self):

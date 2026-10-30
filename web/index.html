@@ -459,7 +459,7 @@ async function pollState() {
       draw(live)
     }
     const s = sessions.find(s => s.id === current)
-    // офис показывает всю задачу: в шапке имя её корня, даже если кликнули по дочерней сессии
+    // у корня задачи в офисе вся задача, у порождённой сессии только своё: имя берём у первого руководителя
     const heads = live.sessions ?? [], title = heads[0]?.title ?? s?.title
     plate.className = 'plate p-' + s?.provider
     plate.textContent = s ? PROVIDERS[s.provider].toUpperCase() : ''

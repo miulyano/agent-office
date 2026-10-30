@@ -115,7 +115,15 @@ function building(st: Studio, now: number): Built {
 // ── what a person is doing right now ───────────────────────────────────────
 type Place = 'desk' | 'cooler' | 'couch' | 'gone'
 type Pose = 'sit' | 'type' | 'think' | 'drink' | 'phone' | 'sleep' | 'walk' | 'standDrink'
-type Doing = { place: Place; pose: Pose; icon: string; text: string; work: boolean }
+type Doing = { place: Place; pose: Pose; icon: string; text: string; work: boolean; time?: string }
+const TIME_COLOR = '#bfe3ff'   // the clock and its figure: apart from the status text and the model's colour
+
+// how long: m:ss under an hour, h:mm after
+function span(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  return s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}`
+}
+const clockOf = (at: number) => new Date(at).toTimeString().slice(0, 5)
 
 const ICON: Record<string, string> = { read: 'read', edit: 'edit', write: 'write', grep: 'grep', bash: 'bash', web: 'web', agent: 'phone', skill: 'skill', other: 'tool' }
 
@@ -127,25 +135,30 @@ function busy(tool: string, text: string): Doing {
 function doing(p: Person, st: Studio, now: number): Doing {
   if (p.boss) {
     const pr = p.head ?? st.producer
-    if (pr.isBusy && now - pr.at < THINK) return busy(pr.tool, pr.activity)
-    if (pr.isBusy) return { place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true }
+    // the session's clock runs while its head is busy
+    const since = p.head?.since ?? st.since
+    const timed = (d: Doing): Doing => ({ ...d, time: since ? span(now - since) : undefined })
+    if (pr.isBusy && now - pr.at < THINK) return timed(busy(pr.tool, pr.activity))
+    if (pr.isBusy) return timed({ place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true })
     return { place: 'desk', pose: 'drink', icon: 'coffee', text: 'ждёт задачу', work: false }
   }
   if (p.waiting) return { place: 'desk', pose: 'sit', icon: '', text: 'ждёт вызова', work: false }
   const a = p.agent!
-  const home = 'дома с ' + new Date(a.endedAt || a.at || a.startedAt).toTimeString().slice(0, 5)
+  // an agent's clock: how long it has worked; once done, how long it took; gone home, since when
+  const home: Doing = { place: 'gone', pose: 'sit', icon: 'home', text: 'дома с', work: false, time: clockOf(a.endedAt || a.at || a.startedAt) }
+  const took = span((a.endedAt || a.at) - a.startedAt), sofar = span(now - a.startedAt)
   if (a.finished) {
     const since = now - a.endedAt
-    if (since < DONE) return { place: 'desk', pose: 'sit', icon: 'done', text: 'сдал работу', work: false }
-    if (since < AWAY) return { place: 'couch', pose: 'sit', icon: 'rest', text: 'в лаунже', work: false }
-    return { place: 'gone', pose: 'sit', icon: 'home', text: home, work: false }
+    if (since < DONE) return { place: 'desk', pose: 'sit', icon: 'done', text: 'сдал работу', work: false, time: took }
+    if (since < AWAY) return { place: 'couch', pose: 'sit', icon: 'rest', text: 'в лаунже', work: false, time: took }
+    return home
   }
   const idle = now - (a.at || a.startedAt)
-  if (a.isWorking && idle < THINK) return busy(a.tool, a.activity || a.desc)
-  if (a.isWorking && idle < COFFEE) return { place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true }
-  if (a.isWorking) return { place: 'cooler', pose: 'standDrink', icon: 'coffee', text: 'у кулера', work: false }
-  if (now - a.endedAt < AWAY) return { place: 'desk', pose: 'sleep', icon: 'sleep', text: 'спит', work: false }
-  return { place: 'gone', pose: 'sit', icon: 'home', text: home, work: false }
+  if (a.isWorking && idle < THINK) return { ...busy(a.tool, a.activity || a.desc), time: sofar }
+  if (a.isWorking && idle < COFFEE) return { place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true, time: sofar }
+  if (a.isWorking) return { place: 'cooler', pose: 'standDrink', icon: 'coffee', text: 'у кулера', work: false, time: sofar }
+  if (now - a.endedAt < AWAY) return { place: 'desk', pose: 'sleep', icon: 'sleep', text: 'спит', work: false, time: took }
+  return home
 }
 
 // ── trips: corridor → lift → lobby, and back ───────────────────────────────
@@ -369,6 +382,7 @@ function drawIcon(c: C2, b: Bub, icon: string, x: number, y: number, t: number) 
 
 // action glyphs 5×5 in the info line, a banknote and a coin
 const GLYPH: Record<string, string[]> = {
+  clock: ['.###.', '#.#.#', '#.##.', '#...#', '.###.'],
   read: ['#####', '#...#', '#.#.#', '#...#', '#####'], edit: ['...##', '..##.', '.##..', '##...', '#....'],
   write: ['####.', '#..#.', '#..##', '#.###', '####.'], grep: ['.##..', '#..#.', '#..#.', '.###.', '....#'],
   bash: ['#....', '.#...', '#....', '.....', '..###'], web: ['.###.', '#.#.#', '#####', '#.#.#', '.###.'],
@@ -378,7 +392,7 @@ const GLYPH: Record<string, string[]> = {
   sleep: ['####.', '..#..', '.#...', '####.', '.....'], walk: ['..#..', '.###.', '#.#.#', '..#..', '.#.#.'],
   lift: ['#####', '#.#.#', '#.#.#', '#.#.#', '#####'], home: ['..#..', '.###.', '#####', '.#.#.', '.#.#.'], rest: ['..##.', '..#.#', '..#..', '###..', '##...'],
 }
-const ICON_COLOR: Record<string, string> = { home: '#e0a070', read: '#7fdcff', edit: '#ffd060', write: '#8af0a0', grep: '#ffa070', bash: '#60ff90', web: '#9ab8ff', phone: '#ff8ac8', skill: '#ffd060', tool: '#d8d8f0', think: '#d8d8f0', coffee: '#e0b080', done: '#8af0a0', sleep: '#a0a8d0', walk: '#d8d8f0', lift: '#d8d8f0', rest: '#c8a0ff' }
+const ICON_COLOR: Record<string, string> = { clock: '#bfe3ff', home: '#e0a070', read: '#7fdcff', edit: '#ffd060', write: '#8af0a0', grep: '#ffa070', bash: '#60ff90', web: '#9ab8ff', phone: '#ff8ac8', skill: '#ffd060', tool: '#d8d8f0', think: '#d8d8f0', coffee: '#e0b080', done: '#8af0a0', sleep: '#a0a8d0', walk: '#d8d8f0', lift: '#d8d8f0', rest: '#c8a0ff' }
 function glyph(c: C2, name: string, x: number, y: number) {
   const g = GLYPH[name]
   if (!g) return
@@ -602,7 +616,11 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
     const heads = st.sessions ?? []
     const working = st.agents.filter(a => a.isWorking).length + heads.filter(h => h.isBusy).length
     labels.push({ x: width / 2, y: 7.5, text: st.office.title || 'AGENT OFFICE', px: 5, color: st.office.accent ?? GOLD, display: true, stroke: false })
-    labels.push({ x: width / 2, y: 18, text: `в работе ${working} · агентов ${st.agents.length} · итого ${money(st.cost)}`, px: 4.2, color: '#ffffff', w: 600 })
+    labels.push({ x: width / 2, y: 18, text: `в работе ${working} · агентов ${st.agents.length}`, px: 4.2, color: '#ffffff', w: 600 })
+    // the session's total at the right edge, after a banknote
+    const total = money(st.cost)
+    banknote(c, xR - 3 - total.length * 2.6 - 9, 18.3)
+    labels.push({ x: xR - 2, y: 18, text: total, px: 4.2, color: GOLD, align: 'right', w: 600 })
     if (heads.length > 1) {
       // which session is at work now: the busy one that wrote last, else the one that wrote last
       const latest = (hs: Head[]) => hs.reduce((a, b) => (b.at > a.at ? b : a))
@@ -750,7 +768,13 @@ export function mountFloors(scene: HTMLCanvasElement, overlay: HTMLCanvasElement
         const icon = moving ? (tripPhase(m!.trip!.from === 'desk', (t - m!.trip!.t0) / WALK).name === 'ride' ? 'lift' : 'walk') : d.place === 'couch' ? 'rest' : d.icon
         const text = moving ? (m!.trip!.to === 'desk' ? 'идёт к столу' : m!.trip!.to === 'gone' ? 'уходит домой' : 'идёт в холл') : d.text
         if (icon) glyph(c, icon, geo.x + 2, iy + 1.5)
-        labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 })
+        // the status text in its icon's colour; the time apart, light blue after a small clock
+        const timeW = d.time && !moving ? d.time.length * 2.3 + 8 : 0
+        labels.push({ x: geo.x + 9, y: iy + 1, text, px: 3.6, color: work ? ICON_COLOR[d.icon] ?? '#ffffff' : 'rgba(235,235,250,0.62)', align: 'left', w: work ? 600 : 400, maxw: cwid - 10 - timeW })
+        if (timeW) {
+          glyph(c, 'clock', geo.x + cwid - timeW + 1, iy + 1.5)
+          labels.push({ x: geo.x + cwid - 2, y: iy + 1, text: d.time!, px: 3.4, color: TIME_COLOR, align: 'right', w: 600 })
+        }
         if (!p.waiting) {
           labels.push({ x: geo.x + 2, y: iy + 7.3, text: p.model, px: 3.4, color: atDesk && d.pose !== 'sleep' ? MODEL_COLOR[p.grade] : 'rgba(235,235,250,0.45)', align: 'left', w: 600 })
           const cost = p.boss ? (p.head ?? st.producer).cost : p.agent!.cost

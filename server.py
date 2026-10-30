@@ -1956,7 +1956,9 @@ def state(sid):
     now = time.time()
     tails = claude_tails()
     if sid in tails:
-        members = task_of(sid, tails, task_tree(tails))
+        # офис задачи — у её корня; порождённая сессия по клику показывает только своё
+        parent = task_tree(tails)
+        members = task_of(sid, tails, parent) if root_of(sid, parent) == sid else [sid]
         heads, agents, roster, chain = [], [], {}, []
         for i, s in enumerate(members, 1):
             t, pdir, mtime = tails[s]
