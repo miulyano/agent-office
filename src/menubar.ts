@@ -303,7 +303,7 @@ function rangeDays(all: Day[]): Day[] {
 
 // Ranges worth a button: «30 дней» says nothing new while the whole history is shorter.
 function ranges(all: Day[]): Array<[string, string]> {
-  const out: Array<[string, string]> = [['1', 'Сегодня'], ['7', '7 дней']]
+  const out: Array<[string, string]> = [['7', '7 дней']]
   if (all.length > 30) out.push(['30', '30 дней'])
   out.push(['all', 'Всё время'])
   return out
@@ -402,11 +402,8 @@ function legend(fams: Map<Family, { usd: number; names: Set<string> }>): string 
     .map(f => `<span><i style="background:${color(f)}"></i>${[...fams.get(f)!.names].join(', ')}</span>`).join('') + '</div>'
 }
 
-// the map follows short periods, anything longer shows the last four weeks
-const heatSpan = () => range === '1' || range === '7' ? Number(range) : 28
-
 function heatmap(all: Day[]): string {
-  const span = heatSpan()
+  const span = range === '7' ? 7 : 28
   const from = all.slice(-span)[0]?.day ?? ''
   const grid: number[][] = WEEKDAYS.map(() => Array(24).fill(0))
   for (const [day, hour, usd] of stats?.hours ?? []) {
@@ -463,13 +460,10 @@ function renderStats(): string {
   const rows = byWeek ? weeks(days) : days
   // week over week only makes sense over the whole history, not inside a 7- or 30-day window
   const wow = range === 'all' ? weekOverWeek(all) : ''
-  // one bar across the whole popover says nothing the tiles don't
-  if (days.length > 1) {
-    html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${byWeek && wow ? wow : span(days)}</span></h3><div class="chart pix">`
-    html += barChart(rows, r => short(r.day), (r, i) => tipOf(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r,
-      (byWeek ? vsPrev(rows, i) : '') + `<br>сессий: ${r.started}`))
-    html += legend(fams) + '</div></section>'
-  }
+  html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${byWeek && wow ? wow : span(days)}</span></h3><div class="chart pix">`
+  html += barChart(rows, r => short(r.day), (r, i) => tipOf(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r,
+    (byWeek ? vsPrev(rows, i) : '') + `<br>сессий: ${r.started}`))
+  html += legend(fams) + '</div></section>'
 
   // the main chart is daily here, so the weeks get their own; by week it already shows them
   const ws = weeks(all)
@@ -490,7 +484,7 @@ function renderStats(): string {
   html += barList(partNames.map((name, i) => ({ name, usd: parts[i] ?? 0, fill: '#7a80a8', tip: `<b>${name}</b><br>${partTips[i]}` })), total)
   html += '</section>'
 
-  html += `<section><h3>ТРАТЫ ПО ЧАСАМ <span class="hint">дни недели × часы, за ${heatSpan()} дн.</span></h3><div class="chart pix">${heatmap(all)}</div></section>`
+  html += `<section><h3>ТРАТЫ ПО ЧАСАМ <span class="hint">дни недели × часы, за ${range === '7' ? 7 : 28} дн.</span></h3><div class="chart pix">${heatmap(all)}</div></section>`
   html += renderLimits()
 
   const projects = new Map<string, number>()
@@ -548,12 +542,10 @@ function renderTokens(): string {
 
   const byWeek = days.length > 45
   const rows = byWeek ? weeks(days) : days
-  if (days.length > 1) {
-    html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${span(days)}</span></h3><div class="chart pix">`
-    html += barChart(rows, r => short(r.day), r => tokenTip(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r),
-      104, tokByKind, tokens)
-    html += '<div class="legend">' + KINDS.map(k => `<span><i style="background:${k.fill}"></i>${k.name}</span>`).join('') + '</div></div></section>'
-  }
+  html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${span(days)}</span></h3><div class="chart pix">`
+  html += barChart(rows, r => short(r.day), r => tokenTip(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r),
+    104, tokByKind, tokens)
+  html += '<div class="legend">' + KINDS.map(k => `<span><i style="background:${k.fill}"></i>${k.name}</span>`).join('') + '</div></div></section>'
 
   const parts = KINDS.map((k, i) => ({ name: k.name, usd: days.reduce((a, d) => a + (d.tokParts[i] ?? 0), 0), fill: k.fill, tip: `<b>${k.name}</b><br>${k.tip}` }))
   const rest = days.reduce((a, d) => a + unsplit(d), 0)
