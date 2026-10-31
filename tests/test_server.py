@@ -1017,6 +1017,14 @@ sleep 30 &
 echo $! > "$0.child"
 wait
 '''
+FAKE_RUNAWAY = '''#!/usr/bin/env python3
+import os, sys, time
+if not os.fork():
+    os.setsid()
+    with open(sys.argv[0] + ".child", "w") as f:
+        f.write(str(os.getpid()))
+time.sleep(30)
+'''
 FAKE_NO_NETWORK = '''#!/usr/bin/env python3
 import json, sys, time
 sys.stdin.read()
@@ -1156,6 +1164,16 @@ class GenerationTest(unittest.TestCase):
         child = self.child_of_fake()
         self.assertEqual(self.wait()['status'], 'failed')
         self.assertFalse(self.alive(child))
+
+    def test_child_that_left_the_group_does_not_hold_the_queue(self):
+        self.fake(FAKE_RUNAWAY)
+        server.start_office(self.folder, self.roster)
+        child = self.child_of_fake()
+        self.addCleanup(os.kill, child, signal.SIGKILL)
+        server.GEN_TIMEOUT = 0.3
+        self.assertEqual(self.wait()['status'], 'failed')
+        self.assertTrue(server.GEN_SLOT.acquire(timeout=1))
+        server.GEN_SLOT.release()
 
     def test_retries_against_the_api_fail_at_once_and_name_the_network(self):
         self.fake(FAKE_NO_NETWORK)
