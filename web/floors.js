@@ -211,11 +211,12 @@ export const OFFICES = {
     business: { name: 'Бизнес-центр', ref: 'светлые стены и ковролин, в духе Pokémon GBA', fig: 'rpg', wall: '#dcecd8', wall2: '#c4dcc0', floor: '#8aa0c8', desk: '#c8c8d4', deskD: '#8888a0', deskTop: '#e2e2ec', chair: '#4a5a7a', pc: '#d8d8e0', pcD: '#9898a8', off: '#304050', line: '#404848', door: '#6a7a9a', cooler: '#f0f0f0', couch: '#5a7ac0', facade: '#4a5a6a', slab: '#5a6878' },
     loft: { name: 'Лофт', ref: 'кирпич и лампы, в духе Eastward', fig: 'hibit', wall: '#26414a', wall2: '#1f3840', floor: '#4e3626', desk: '#7a5034', deskD: '#4a2e1c', deskTop: '#8e6040', chair: '#2e3a40', pc: '#2a2a30', pcD: '#18181c', off: '#10181c', line: null, door: '#3a2a20', cooler: '#9aa8b0', couch: '#6a3a3a', facade: '#1c262a', slab: '#2a2420', lampsAlways: true },
 };
+const BOARD_INK = { title: '#2445a8', text: '#2a2a33', money: '#1f7a3a' };
 const TIMES = {
     morning: { name: 'Утро', sky: ['#bfe0ff', '#ffd2a0'], tint: '#fff0dc', lamps: false, sun: [0.15, 0.7] },
     day: { name: 'День', sky: ['#6cbcff', '#bfe6ff'], tint: null, lamps: false, sun: [0.5, 0.25] },
     evening: { name: 'Вечер', sky: ['#4a2f7a', '#ff9a6a'], tint: '#dcb8c8', lamps: true, sun: [0.85, 0.75] },
-    night: { name: 'Ночь', sky: ['#060a20', '#141c44'], tint: '#7880b4', lamps: true, moon: true },
+    night: { name: 'Ночь', sky: ['#060a20', '#141c44'], tint: '#7880b4', ink: { title: '#0c1a5c', text: '#0a0a12', money: '#005016' }, lamps: true, moon: true },
 };
 export const TIME_OPTIONS = { clock: 'По часам', morning: 'Утро', day: 'День', evening: 'Вечер', night: 'Ночь' };
 function timeNow(sel) {
@@ -1059,7 +1060,7 @@ export function mountFloors(scene, overlay, onError) {
             labels.push({ x: width / 2, y: 24.5, text: `сейчас: ${markOf(st, heads.indexOf(cur) + 1)}${cur.title} · сессий ${heads.length}`, px: 3.6, color: 'rgba(235,235,250,0.85)', maxw: width - 2 * FL.pad - 8 });
         }
         // the producer's office: panorama window, carpet, board
-        const doorTops = [], P = L.boss.top;
+        const doorTops = [], P = L.boss.top, ink = TIMES[tm].ink ?? BOARD_INK;
         R(c, xL, P - FL.info, xR - xL, 46 + FL.info, shade(room.wall, 0.93));
         const wx = x0 + 6, ww = L.cols * FL.cw - 12, night = tm === 'night' || tm === 'evening';
         box(c, wx, P + 5, ww, 30, TIMES[tm].sky[1], shade(room.wall, 0.6));
@@ -1087,9 +1088,9 @@ export function mountFloors(scene, overlay, onError) {
         }
         const arrived = flights.filter(fl => t - fl.t0 >= 1.4).length;
         whiteboard(c, xL + 2, P - FL.info + 2, FL.plaque - 6, 19);
-        labels.push({ x: xL + 4, y: P - FL.info + 3.3, text: 'КАБИНЕТ', px: 3.4, color: '#2445a8', w: 600, align: 'left', stroke: false });
-        labels.push({ x: xL + 4, y: P - FL.info + 8.6, text: 'сдано работ: ' + arrived, px: 3.1, color: '#2a2a33', align: 'left', maxw: FL.plaque - 10, stroke: false });
-        labels.push({ x: xL + 4, y: P - FL.info + 13.8, text: money(st.cost) + ' всего', px: 3.1, color: '#1f7a3a', w: 600, align: 'left', stroke: false });
+        labels.push({ x: xL + 4, y: P - FL.info + 3.3, text: 'КАБИНЕТ', px: 3.4, color: ink.title, w: 600, align: 'left', stroke: false });
+        labels.push({ x: xL + 4, y: P - FL.info + 8.6, text: 'сдано работ: ' + arrived, px: 3.1, color: ink.text, align: 'left', maxw: FL.plaque - 10, stroke: false });
+        labels.push({ x: xL + 4, y: P - FL.info + 13.8, text: money(st.cost) + ' всего', px: 3.1, color: ink.money, w: 600, align: 'left', stroke: false });
         // floors
         for (const fl of L.floors) {
             const people = fl.def.cells.flatMap(cell => cell.person && !cell.person.waiting ? [cell.person] : []);
@@ -1109,9 +1110,9 @@ export function mountFloors(scene, overlay, onError) {
             }
             const busyHere = people.filter(p => now_.get(p.key).work).length;
             whiteboard(c, xL + 2, fl.y + 2, FL.plaque - 6, 19);
-            labels.push({ x: xL + 4, y: fl.y + 3.3, text: fl.def.name, px: 3.4, color: '#2445a8', w: 600, align: 'left', maxw: FL.plaque - 10, stroke: false });
-            labels.push({ x: xL + 4, y: fl.y + 8.6, text: `в деле ${busyHere}` + (fl.def.home ? ` · дома ${fl.def.home}` : ''), px: 3.1, color: '#2a2a33', align: 'left', maxw: FL.plaque - 10, stroke: false });
-            labels.push({ x: xL + 4, y: fl.y + 13.8, text: money(sum), px: 3.3, color: '#1f7a3a', w: 600, align: 'left', stroke: false });
+            labels.push({ x: xL + 4, y: fl.y + 3.3, text: fl.def.name, px: 3.4, color: ink.title, w: 600, align: 'left', maxw: FL.plaque - 10, stroke: false });
+            labels.push({ x: xL + 4, y: fl.y + 8.6, text: `в деле ${busyHere}` + (fl.def.home ? ` · дома ${fl.def.home}` : ''), px: 3.1, color: ink.text, align: 'left', maxw: FL.plaque - 10, stroke: false });
+            labels.push({ x: xL + 4, y: fl.y + 13.8, text: money(sum), px: 3.3, color: ink.money, w: 600, align: 'left', stroke: false });
         }
         // server room: a rack for each background command, or a shelf for each once the racks run out
         if (L.srv) {
@@ -1125,10 +1126,10 @@ export function mountFloors(scene, overlay, onError) {
             doorTops.push(ST);
             const runs = shells.filter(s => s.status === 'running');
             whiteboard(c, xL + 2, L.srv + 2, FL.plaque - 6, 19);
-            labels.push({ x: xL + 4, y: L.srv + 3.3, text: 'СЕРВЕРНАЯ', px: 3.4, color: '#2445a8', w: 600, align: 'left', stroke: false });
-            labels.push({ x: xL + 4, y: L.srv + 8.6, text: 'идёт ' + runs.length, px: 3.1, color: '#2a2a33', align: 'left', stroke: false });
+            labels.push({ x: xL + 4, y: L.srv + 3.3, text: 'СЕРВЕРНАЯ', px: 3.4, color: ink.title, w: 600, align: 'left', stroke: false });
+            labels.push({ x: xL + 4, y: L.srv + 8.6, text: 'идёт ' + runs.length, px: 3.1, color: ink.text, align: 'left', stroke: false });
             if (runs.length)
-                labels.push({ x: xL + 4, y: L.srv + 13.8, text: 'дольше всех ' + span(now - Math.min(...runs.map(s => s.start))), px: 3.1, color: '#1f7a3a', w: 600, align: 'left', maxw: FL.plaque - 10, stroke: false });
+                labels.push({ x: xL + 4, y: L.srv + 13.8, text: 'дольше всех ' + span(now - Math.min(...runs.map(s => s.start))), px: 3.1, color: ink.money, w: 600, align: 'left', maxw: FL.plaque - 10, stroke: false });
             const ageOf = (s) => ((s.end || now) - s.start) / 1000;
             const dense = shells.length > L.cols, cap = L.cols * shelves, hidden = shells.length - cap + 1;
             if (dense) {
