@@ -15,7 +15,7 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, Helvetica, sans-serif; }
-  body { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: auto 1fr; height: 100vh; }
+  body { display: grid; grid-template-columns: 1fr min(var(--side, 340px), 60vw); grid-template-rows: auto 1fr; height: 100vh; }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: var(--wall); }
   ::-webkit-scrollbar-thumb { background: var(--floor); border: 2px solid var(--wall); }
@@ -75,10 +75,24 @@
   .stage canvas.labels { position: absolute; inset: 0; height: 100%; pointer-events: none; image-rendering: auto; }
   .err { --c: var(--off); margin: 12px var(--gap) 0; padding: 8px 12px; background: #2a1820; color: #ffb0b0; font: 12px Menlo, monospace; white-space: pre-wrap; }
 
-  aside { border-left: var(--px) solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-  aside section { padding: 14px var(--gap); overflow: auto; }
+  aside { position: relative; border-left: var(--px) solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  /* ручка ширины колонки: лежит на левой границе, при наведении граница золотая */
+  .grip { position: absolute; left: calc(-1 * var(--px)); top: 0; bottom: 0; width: 8px; z-index: 1; cursor: col-resize; touch-action: none; outline: none; }
+  .grip::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: var(--px); }
+  .grip:hover::after, .grip:focus-visible::after, .grip.drag::after { background: var(--gold); }
+  aside section, aside details { padding: 14px var(--gap); overflow: auto; }
   aside section.sessions { max-height: 45%; border-bottom: var(--px) solid var(--line); flex: none; }
-  aside section.log { flex: 1; min-height: 0; }
+  aside .log { flex: 1; min-height: 0; }
+  /* журнал свёрнут: сессии забирают всю высоту */
+  aside .log:not([open]) { flex: none; }
+  aside:has(.log:not([open])) section.sessions { max-height: none; flex: 1; }
+  .log summary { list-style: none; cursor: pointer; }
+  .log summary::-webkit-details-marker { display: none; }
+  .log summary h2 { justify-content: flex-start; gap: 6px; }
+  .log summary h2::before { content: '▾'; }
+  .log:not([open]) summary h2 { margin: 0; }
+  .log:not([open]) summary h2::before { content: '▸'; }
+  .log summary:hover h2 { color: var(--text); }
   aside h2 { margin: 0 0 10px; font: 600 11px Menlo, monospace; letter-spacing: .12em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
   aside h2 label { font: 500 12px -apple-system, Helvetica, sans-serif; letter-spacing: 0; cursor: pointer; display: flex; align-items: center; gap: 7px; }
 
@@ -114,6 +128,7 @@
   @media (max-width: 900px) {
     body { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; height: auto; }
     aside { border-left: 0; border-top: var(--px) solid var(--line); }
+    .grip { display: none; }
     aside section.sessions { max-height: none; }
   }
 </style>
@@ -143,15 +158,16 @@
   </div></div>
 </main>
 <aside>
+  <div class="grip" id="grip" role="separator" aria-orientation="vertical" aria-label="Ширина колонки" aria-valuemin="260" aria-valuemax="720" aria-valuenow="340" tabindex="0" title="Потяни, чтобы изменить ширину. Двойной клик вернёт обычную"></div>
   <section class="sessions">
     <h2>СЕССИИ <label><input type="checkbox" id="follow"> следить за активной</label></h2>
     <div class="seg prov" id="prov"></div>
     <div id="sessions"><div class="empty">Ищу сессии…</div></div>
   </section>
-  <section class="log">
-    <h2>ЖУРНАЛ</h2>
+  <details class="log" id="logPanel" open>
+    <summary><h2>ЖУРНАЛ</h2></summary>
     <div id="log"><div class="empty">Пока тихо.</div></div>
-  </section>
+  </details>
 </aside>
 <script type="module">
 // метка в адресе: после правок office.js браузер не держит старый модуль
@@ -174,6 +190,35 @@ if (!(provider in PROVIDERS)) provider = 'all'
 follow.checked = !current
 function save(key, value) { try { localStorage.setItem(key, value) } catch {} }
 try { if (!current && localStorage.getItem('office.follow') === '0') follow.checked = false } catch {}
+
+// правая колонка: ширину тянут за ручку или стрелками, двойной клик возвращает обычную
+const grip = $('grip'), SIDE = 340
+let side = SIDE
+function setSide(w) {
+  side = Math.round(Math.max(260, Math.min(w, 720)))
+  document.body.style.setProperty('--side', side + 'px')
+  grip.setAttribute('aria-valuenow', side)
+}
+try { setSide(Number(localStorage.getItem('office.side')) || SIDE) } catch {}
+grip.addEventListener('pointerdown', e => {
+  e.preventDefault()
+  grip.setPointerCapture(e.pointerId)
+  grip.classList.add('drag')
+})
+grip.addEventListener('pointermove', e => { if (grip.hasPointerCapture(e.pointerId)) setSide(Math.min(innerWidth - e.clientX, innerWidth * 0.6)) })
+grip.addEventListener('lostpointercapture', () => { grip.classList.remove('drag'); save('office.side', side) })
+grip.addEventListener('dblclick', () => { setSide(SIDE); save('office.side', side) })
+grip.addEventListener('keydown', e => {
+  const step = { ArrowLeft: 16, ArrowRight: -16 }[e.key]
+  if (!step) return
+  e.preventDefault()
+  setSide(side + step)
+  save('office.side', side)
+})
+// свёрнутый журнал остаётся свёрнутым после перезагрузки
+const logPanel = $('logPanel')
+try { if (localStorage.getItem('office.log') === '0') logPanel.open = false } catch {}
+logPanel.addEventListener('toggle', () => save('office.log', logPanel.open ? '1' : '0'))
 
 const who = w => roleName(w, live?.office)
 const shown = () => sessions.filter(s => provider === 'all' || s.provider === provider)
