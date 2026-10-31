@@ -2441,13 +2441,25 @@ class TaskTest(unittest.TestCase):
         self.projects, server.PROJECTS = server.PROJECTS, os.path.join(self.dir.name, 'projects')
         self.live, server.SESSIONS_DIR = server.SESSIONS_DIR, os.path.join(self.dir.name, 'sessions')
         self.codex, server.CODEX_SESSIONS = server.CODEX_SESSIONS, os.path.join(self.dir.name, 'нет-codex')
+        self.app, server.APP_SESSIONS = server.APP_SESSIONS, os.path.join(self.dir.name, 'app')
         os.makedirs(server.SESSIONS_DIR)
         server.TAILS.clear()
+        server.APP_ROWS.clear()
 
     def tearDown(self):
-        server.PROJECTS, server.SESSIONS_DIR, server.CODEX_SESSIONS = self.projects, self.live, self.codex
+        server.PROJECTS, server.SESSIONS_DIR, server.CODEX_SESSIONS, server.APP_SESSIONS = self.projects, self.live, self.codex, self.app
         server.TAILS.clear()
+        server.APP_ROWS.clear()
         self.dir.cleanup()
+
+    def app_session(self, host, sid, spawned_by='', **extra):
+        folder = os.path.join(server.APP_SESSIONS, 'org', 'user')
+        os.makedirs(folder, exist_ok=True)
+        row = dict({'sessionId': host, 'cliSessionId': sid}, **extra)
+        if spawned_by:
+            row['spawnedFrom'] = {'sessionId': spawned_by, 'taskId': 't'}
+        with open(os.path.join(folder, host + '.json'), 'w') as f:
+            json.dump(row, f)
 
     def journal(self, sid, cwd, prompt, agent=None, ts='2026-01-01T10:00:00Z'):
         pdir = os.path.join(server.PROJECTS, re.sub(r'[^A-Za-z0-9]', '-', cwd))
@@ -2500,9 +2512,71 @@ class TaskTest(unittest.TestCase):
         self.journal('root', '/work/app', 'сделай')
         self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, agent='a2', ts='2026-01-01T10:05:00Z')
         self.journal('other', '/work/app', 'другое', ts='2026-01-01T10:06:00Z')
-        self.assertEqual([s['id'] for s in server.state('other')['sessions']], ['other', 'kid'])
+        self.assertEqual([s['id'] for s in server.state('root')['sessions']], ['root', 'kid'])
         self.assertEqual([s['id'] for s in server.state('kid')['sessions']], ['kid'])
-        self.assertEqual([s['id'] for s in server.state('root')['sessions']], ['root'])
+        self.assertEqual([s['id'] for s in server.state('other')['sessions']], ['other'])
+
+    def test_session_started_later_is_nobodys_parent(self):
+        self.journal('kid', '/work/app', BACKGROUND)
+        self.journal('late', '/work/app', 'новая задача', ts='2026-01-01T12:00:00Z')
+        self.assertEqual({s['id']: s['task'] for s in server.sessions()}, {'kid': 'kid', 'late': 'late'})
+
+    def test_note_of_a_younger_session_does_not_take_a_child(self):
+        note = LINKED.replace('local_h1', 'local_a1')  # в id приложения только шестнадцатеричные цифры
+        self.journal('elder', '/work/app', 'сделай ' + note)
+        self.journal('kid', '/work/app', BACKGROUND, ts='2026-01-01T10:05:00Z')
+        self.journal('younger', '/work/app', 'другое ' + note, ts='2026-01-01T10:10:00Z')
+        self.alive(7, 'kid', 'local_a1')
+        self.assertEqual({s['id']: s['parent'] for s in server.sessions()}['kid'], 'elder')
+
+    def test_app_records_name_the_parent_of_a_closed_session(self):
+        self.journal('elder', '/work/app', 'сделай')
+        self.journal('root', '/work/app', 'другое', ts='2026-01-01T10:01:00Z')
+        self.journal('kid', '/work/app/.claude/worktrees/x', BACKGROUND, ts='2026-01-01T10:05:00Z')
+        self.journal('grandkid', '/work/app', BACKGROUND, ts='2026-01-01T10:06:00Z')
+        self.app_session('local_root', 'root')
+        self.app_session('local_elder', 'elder')
+        self.app_session('local_kid', 'kid', 'local_elder')
+        self.app_session('local_grandkid', 'grandkid', 'local_kid')
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['kid']['parent'], rows['grandkid']['parent']), ('elder', 'kid'))
+        self.assertEqual(rows['grandkid']['task'], 'elder')
+        self.assertEqual(rows['root']['task'], 'root')
+
+    def test_session_moved_to_the_top_level_has_no_parent(self):
+        self.journal('root', '/work/app', 'сделай')
+        self.journal('kid', '/work/app', BACKGROUND, ts='2026-01-01T10:05:00Z')
+        self.app_session('local_root', 'root')
+        self.app_session('local_kid', 'kid', 'local_root', lineageDetached=True)
+        self.assertEqual({s['id']: s['task'] for s in server.sessions()}, {'root': 'root', 'kid': 'kid'})
+
+    def test_child_of_a_parent_out_of_the_list_is_not_guessed(self):
+        self.journal('older', '/work/app', 'сделай')
+        self.journal('kid', '/work/app', BACKGROUND, ts='2026-01-01T10:05:00Z')
+        self.app_session('local_kid', 'kid', 'local_gone')
+        self.assertEqual({s['id']: s['task'] for s in server.sessions()}['kid'], 'kid')
+
+    def test_broken_app_record_does_not_cost_the_rest(self):
+        self.journal('root', '/work/app', 'сделай')
+        self.journal('kid', '/work/app', BACKGROUND, ts='2026-01-01T10:05:00Z')
+        self.app_session('local_root', 'root')
+        self.app_session('local_kid', 'kid', 'local_root')
+        with open(os.path.join(server.APP_SESSIONS, 'org', 'user', 'local_bad.json'), 'w') as f:
+            f.write('{не json')
+        with open(os.path.join(server.APP_SESSIONS, 'org', 'user', 'local_list.json'), 'w') as f:
+            f.write('[1]')
+        self.assertEqual({s['id']: s['parent'] for s in server.sessions()}['kid'], 'root')
+
+    def test_app_record_is_read_again_when_it_changes(self):
+        self.journal('root', '/work/app', 'сделай')
+        self.journal('kid', '/work/app', 'другое', ts='2026-01-01T10:05:00Z')
+        self.app_session('local_root', 'root')
+        self.app_session('local_kid', 'kid', 'local_root')
+        self.assertEqual({s['id']: s['parent'] for s in server.sessions()}['kid'], 'root')
+        self.app_session('local_kid', 'kid', 'local_root', lineageDetached=True)
+        path = os.path.join(server.APP_SESSIONS, 'org', 'user', 'local_kid.json')
+        os.utime(path, (time.time() + 5, time.time() + 5))
+        self.assertEqual({s['id']: s['parent'] for s in server.sessions()}['kid'], '')
 
     def test_log_marks_whose_agent_it_was(self):
         self.journal('root', '/work/app', 'сделай ' + LINKED, agent='a1')

@@ -32,6 +32,7 @@ WEB = os.path.join(HERE, 'web')
 CLAUDE_DIR = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.expanduser('~/.claude')
 PROJECTS = os.path.join(CLAUDE_DIR, 'projects')
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, 'sessions')  # живые процессы Claude Code: id журнала ↔ id в приложении
+APP_SESSIONS = os.path.expanduser('~/Library/Application Support/Claude/claude-code-sessions')  # записи приложения о сессиях, и закрытых тоже
 DATA = os.path.join(CLAUDE_DIR, 'agent-office')  # офисы папок; меняется флагом --data
 SHOTS = os.path.expanduser('~/Pictures/Agent Office')  # скриншоты офиса; меняется флагом --shots
 SHOT_LIMIT = 64 * 1024 * 1024
@@ -1823,6 +1824,7 @@ def stats(provider=None):
 
 
 TAILS = {}
+APP_ROWS = {}  # файл записи приложения → (mtime, только то, что нужно от записи)
 
 
 def tail(path, kind=Tail):
@@ -1908,6 +1910,29 @@ def live_ids():
     return out
 
 
+def app_row(path):
+    """Из записи приложения берём только связь: остальное в ней нам не нужно."""
+    mtime = mtime_of(path)
+    known = APP_ROWS.get(path)
+    if known and known[0] == mtime:
+        return known[1]
+    d = read_json(path)
+    if not isinstance(d, dict):
+        d = {}
+    spawned = d.get('spawnedFrom')
+    row = (d.get('sessionId'), d.get('cliSessionId'), spawned.get('sessionId') if isinstance(spawned, dict) else None, bool(d.get('lineageDetached')))
+    APP_ROWS[path] = (mtime, row)
+    return row
+
+
+def app_lineage():
+    """Родословная из записей приложения: id журнала → id журнала родителя, у корня пусто.
+    Вынесенная наверх сессия тоже корень, хотя запись о том, кто её запустил, остаётся."""
+    rows = [app_row(path) for path in glob.glob(os.path.join(glob.escape(APP_SESSIONS), '*', '*', 'local_*.json'))]
+    journals = {host: sid for host, sid, _, _ in rows if host and sid}
+    return {sid: '' if detached else journals.get(spawned, '') for _, sid, spawned, detached in rows if sid}
+
+
 def process_alive(pid):
     try:
         os.kill(pid, 0)
@@ -1957,19 +1982,21 @@ def claude_tails():
 
 
 def task_tree(tails):
-    """Родитель каждой сессии. Связь — заметка приложения в журнале родителя;
-    ребёнок, чей родитель уже закрыт, пристаёт к последней чужой сессии своей папки."""
+    """Родитель каждой сессии. Записи приложения точны: они помнят закрытых и вынесенных наверх.
+    Сессии, о которых их нет, связывает заметка в журнале родителя; ребёнок, чей родитель уже закрыт,
+    пристаёт к последней чужой сессии своей папки, начатой раньше него."""
+    app = app_lineage()
+    parent = {sid: app[sid] for sid in tails if app.get(sid) in tails}
     hosts = live_ids()
-    parent = {}
     for sid, (t, _, _) in tails.items():
         for host in t.linked:
             kid = hosts.get(host)
-            if kid in tails and kid != sid and kid not in parent:
+            if kid in tails and kid != sid and kid not in parent and kid not in app and t.first <= tails[kid][0].first:
                 parent[kid] = sid
     for sid, (t, _, _) in tails.items():
-        if not t.child or sid in parent:
+        if not t.child or sid in parent or sid in app:
             continue
-        others = [(o.last, s) for s, (o, _, _) in tails.items() if s != sid and not o.child and o.home == t.home and s not in parent]
+        others = [(o.first, s) for s, (o, _, _) in tails.items() if s != sid and not o.child and o.home == t.home and s not in parent and o.first <= t.first]
         if others:
             parent[sid] = max(others)[1]
     return parent
