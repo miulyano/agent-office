@@ -914,6 +914,17 @@ class LedgerCodexTest(unittest.TestCase):
         self.assertEqual(set(ledger.report()['first']), {'claude', 'codex'})
         self.assertEqual(ledger.report()['first']['codex'], server.day_of(local_day(0) * 1000))
 
+    def test_split_shows_both_providers_whatever_the_filter(self):
+        self.write(self.session())
+        with open(os.path.join(self.claude, '-work-app', 'sid.jsonl'), 'w') as f:
+            f.write(assistant('m1', ts=iso(local_day(-2) + 3600)))
+        ledger = self.scan()
+        today, earlier = server.day_of(local_day(0) * 1000), server.day_of(local_day(-2) * 1000)
+        price = round(server.message_cost('claude-sonnet-5-5', {'input_tokens': 1000, 'output_tokens': 100}), 4)
+        for report in (ledger.report(), ledger.report(provider='claude'), ledger.report(provider='codex')):
+            self.assertEqual(report['split'][earlier], {'claude': price})
+            self.assertEqual(report['split'][today], {'codex': round(self.usd, 4)})
+
     def test_review_thread_pays_but_is_not_a_session(self):
         self.write(meta(thread='child', source={'subagent': {'other': 'guardian'}}, parent_thread_id=THREAD)
                    + context('codex-auto-review', ts=self.at) + usage_record(ts=self.at))

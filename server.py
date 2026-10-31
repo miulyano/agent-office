@@ -1752,18 +1752,21 @@ class Ledger:
 
     def report(self, now=None, provider=None):
         """Дни подряд от первой записи до сегодня; почасово — последние HEAT_DAYS дней.
-        provider — только Claude Code или только Codex."""
+        provider — только Claude Code или только Codex; split — кто сколько потратил
+        по дням, его фильтр не трогает: там сравниваются оба."""
         from datetime import date, timedelta
         now = now or time.time()
         since_24 = time.strftime('%Y-%m-%dT%H', time.localtime(now - 23 * 3600))
         heat_from = day_of((now - HEAT_DAYS * 86400) * 1000)
-        days, hours, last24, first = {}, [], 0.0, {}
+        days, hours, last24, first, split = {}, [], 0.0, {}, {}
         for hour, projects in sorted(self.hours.items()):
             spent = 0.0
             for project, models in projects.items():
                 for model, cell in models.items():
                     who = provider_of(model)
                     first.setdefault(who, hour[:10])
+                    share = split.setdefault(hour[:10], {})
+                    share[who] = share.get(who, 0.0) + sum(cell[:4])
                     if provider and who != provider:
                         continue
                     row = days.setdefault(hour[:10], blank_day(hour[:10]))
@@ -1801,7 +1804,8 @@ class Ledger:
             for k in ('models', 'projects'):
                 row[k] = {name: round(usd, 4) for name, usd in row[k].items()}
         return {'since': out[0]['day'] if out else '', 'last24': round(last24, 4), 'days': out, 'hours': hours,
-                'first': first, 'limits': self.rate}
+                'first': first, 'limits': self.rate,
+                'split': {day: {who: round(usd, 4) for who, usd in share.items()} for day, share in split.items()}}
 
 
 LEDGER = None
