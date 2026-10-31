@@ -299,7 +299,7 @@ function niceMax(v) {
 }
 function tipOf(title, d, extra = '') {
     const lines = MODELS.map(f => [f, [...Object.entries(d.models)].filter(([m]) => family(m) === f)])
-        .flatMap(([, ms]) => ms.map(([m, usd]) => `${modelName(m)}: ${money(usd)}`));
+        .flatMap(([, ms]) => ms.map(([m, usd]) => `${esc(modelName(m))}: ${money(usd)}`));
     return `<b>${esc(title)}</b><br>итого ${money(d.usd)}${lines.length ? '<br>' + lines.join('<br>') : ''}${extra}`;
 }
 const usdByModel = r => MODELS.map(f => [color(f), Object.entries(r.models).filter(([m]) => family(m) === f).reduce((a, [, v]) => a + v, 0)]);
@@ -342,7 +342,7 @@ function barChart(rows, label, tip, h = 104, stack = usdByModel, fmt = money) {
 }
 function legend(fams) {
     return '<div class="legend">' + MODELS.filter(f => fams.has(f))
-        .map(f => `<span><i style="background:${color(f)}"></i>${[...fams.get(f).names].join(', ')}</span>`).join('') + '</div>';
+        .map(f => `<span><i style="background:${color(f)}"></i>${esc([...fams.get(f).names].join(', '))}</span>`).join('') + '</div>';
 }
 function heatmap(all) {
     const span = range === '7' ? 7 : 28;

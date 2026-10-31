@@ -337,7 +337,7 @@ function niceMax(v: number): number {
 
 function tipOf(title: string, d: Day, extra = ''): string {
   const lines = MODELS.map(f => [f, [...Object.entries(d.models)].filter(([m]) => family(m) === f)] as const)
-    .flatMap(([, ms]) => ms.map(([m, usd]) => `${modelName(m)}: ${money(usd)}`))
+    .flatMap(([, ms]) => ms.map(([m, usd]) => `${esc(modelName(m))}: ${money(usd)}`))
   return `<b>${esc(title)}</b><br>итого ${money(d.usd)}${lines.length ? '<br>' + lines.join('<br>') : ''}${extra}`
 }
 
@@ -384,7 +384,7 @@ function barChart(rows: Day[], label: (d: Day) => string, tip: (d: Day, i: numbe
 
 function legend(fams: Map<Family, { usd: number; names: Set<string> }>): string {
   return '<div class="legend">' + MODELS.filter(f => fams.has(f))
-    .map(f => `<span><i style="background:${color(f)}"></i>${[...fams.get(f)!.names].join(', ')}</span>`).join('') + '</div>'
+    .map(f => `<span><i style="background:${color(f)}"></i>${esc([...fams.get(f)!.names].join(', '))}</span>`).join('') + '</div>'
 }
 
 function heatmap(all: Day[]): string {
