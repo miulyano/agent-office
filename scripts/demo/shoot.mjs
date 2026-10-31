@@ -76,7 +76,6 @@ try {
   if (want('hero') || want('styles') || want('codex') || want('gif')) {
     await size(1440, 1000)
     await go(`${BASE}/#${sid}`)
-    await js(`localStorage.setItem('office.follow','0')`)
     await setTime('day')
   }
   if (want('hero')) {
