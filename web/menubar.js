@@ -45,6 +45,7 @@ function tokens(n) {
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
 const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 const parse = (day) => new Date(day + 'T00:00:00');
+const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const short = (day) => { const d = parse(day); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
 const weekday = (day) => (parse(day).getDay() + 6) % 7;
 function ago(t) {
@@ -179,14 +180,28 @@ function sessionRow(s, lamp) {
     <span class="body"><div class="t">${esc(s.title)}</div><div class="p"><em>${s.provider === 'codex' ? 'CODEX' : 'CLAUDE'}</em>${esc(s.project)} · ${state}</div></span>
     <span class="money">${money2}</span></button>`;
 }
-// who spent today: shown once there is something to compare
-function splitBar() {
+// who spent what: always both, a provider at zero is an answer too
+function splitBar(claude, codex) {
+    const all = claude + codex;
+    const width = (usd) => all ? (usd / all) * 100 : 0;
+    return `<div class="split"><i style="width:${width(claude)}%;background:var(--claude)"></i><i style="width:${width(codex)}%;background:var(--codex)"></i></div>
+    <div class="splits"><span><i style="background:var(--claude)"></i>Claude Code <b>${money(claude)}</b> ${pct(claude, all)}</span><span><i style="background:var(--codex)"></i>Codex <b>${money(codex)}</b> ${pct(codex, all)}</span></div>`;
+}
+function splitToday() {
     const of = (p) => sessions.filter(s => s.provider === p).reduce((a, s) => a + (s.today ?? 0), 0);
-    const claude = of('claude'), codex = of('codex'), all = claude + codex;
-    if (!claude || !codex)
+    return splitBar(of('claude'), of('codex'));
+}
+// The chosen period counted by the calendar: a provider filter cuts the days list
+// at that provider's first day, the comparison of both must not shrink with it.
+function splitOf(today) {
+    const split = stats?.split;
+    if (!split)
         return '';
-    return `<div class="split"><i style="width:${(claude / all) * 100}%;background:var(--claude)"></i><i style="width:${(codex / all) * 100}%;background:var(--codex)"></i></div>
-    <div class="splits"><span><i style="background:var(--claude)"></i>Claude Code <b>${money(claude)}</b></span><span><i style="background:var(--codex)"></i>Codex <b>${money(codex)}</b></span></div>`;
+    const start = parse(today);
+    start.setDate(start.getDate() - Number(range) + 1);
+    const from = range === 'all' ? '' : dayKey(start);
+    const of = (p) => Object.entries(split).reduce((a, [day, share]) => day >= from ? a + (share[p] ?? 0) : a, 0);
+    return splitBar(of('claude'), of('codex'));
 }
 function renderSessions() {
     const today = sessions.reduce((a, s) => a + (s.today ?? 0), 0);
@@ -198,7 +213,7 @@ function renderSessions() {
     <div class="tile pix"><div class="k">Сегодня</div><div class="v">${money(today)}</div><div class="s">с 00:00</div></div>
     <div class="tile pix"><div class="k">В работе</div><div class="v">${busy.length ? '<span class="lamp big"></span>' : ''}${busy.length}</div><div class="s">${busy.length ? `исполнителей: ${hands}` : 'сессий'}</div></div>
   </div>`;
-    html += splitBar();
+    html += splitToday();
     const live = sessions.filter(s => s.isLive).sort((a, b) => b.working - a.working || b.at - a.at);
     const rest = sessions.filter(s => !s.isLive && ((s.today ?? 0) > 0 || s.at >= midnight));
     html += `<section><h3>АКТИВНЫЕ <span class="hint">${live.length || ''}</span></h3>`;
@@ -250,7 +265,7 @@ function rangeDays(all) {
 }
 // Ranges worth a button: «30 дней» says nothing new while the whole history is shorter.
 function ranges(all) {
-    const out = [['7', '7 дней']];
+    const out = [['1', 'Сегодня'], ['7', '7 дней']];
     if (all.length > 30)
         out.push(['30', '30 дней']);
     out.push(['all', 'Всё время']);
@@ -260,7 +275,7 @@ function weeks(days) {
     const out = [];
     for (const d of days) {
         const monday = new Date(parse(d.day).getTime() - weekday(d.day) * 86400e3);
-        const key = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+        const key = dayKey(monday);
         let w = out[out.length - 1];
         if (!w || w.day !== key) {
             w = { day: key, usd: 0, models: {}, projects: {}, parts: [0, 0, 0, 0], tokens: 0, tokParts: [0, 0, 0, 0], tokModels: {}, tokProjects: {}, sessions: 0, started: 0 };
@@ -344,8 +359,10 @@ function legend(fams) {
     return '<div class="legend">' + MODELS.filter(f => fams.has(f))
         .map(f => `<span><i style="background:${color(f)}"></i>${[...fams.get(f).names].join(', ')}</span>`).join('') + '</div>';
 }
+// the map follows short periods, anything longer shows the last four weeks
+const heatSpan = () => range === '1' || range === '7' ? Number(range) : 28;
 function heatmap(all) {
-    const span = range === '7' ? 7 : 28;
+    const span = heatSpan();
     const from = all.slice(-span)[0]?.day ?? '';
     const grid = WEEKDAYS.map(() => Array(24).fill(0));
     for (const [day, hour, usd] of stats?.hours ?? []) {
@@ -397,14 +414,18 @@ function renderStats() {
     <div class="tile pix"><div class="k">Сессий</div><div class="v">${started}</div><div class="s">начато</div></div>
     <div class="tile pix"><div class="k">Сессия</div><div class="v">${money(started ? total / started : 0)}</div><div class="s">в среднем</div></div>
   </div>`;
+    html += splitOf(all[all.length - 1].day);
     const fams = byFamily(days);
     const byWeek = days.length > 45;
     const rows = byWeek ? weeks(days) : days;
     // week over week only makes sense over the whole history, not inside a 7- or 30-day window
     const wow = range === 'all' ? weekOverWeek(all) : '';
-    html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${byWeek && wow ? wow : span(days)}</span></h3><div class="chart pix">`;
-    html += barChart(rows, r => short(r.day), (r, i) => tipOf(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r, (byWeek ? vsPrev(rows, i) : '') + `<br>сессий: ${r.started}`));
-    html += legend(fams) + '</div></section>';
+    // one bar across the whole popover says nothing the tiles don't
+    if (days.length > 1) {
+        html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${byWeek && wow ? wow : span(days)}</span></h3><div class="chart pix">`;
+        html += barChart(rows, r => short(r.day), (r, i) => tipOf(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r, (byWeek ? vsPrev(rows, i) : '') + `<br>сессий: ${r.started}`));
+        html += legend(fams) + '</div></section>';
+    }
     // the main chart is daily here, so the weeks get their own; by week it already shows them
     const ws = weeks(all);
     if (range === 'all' && !byWeek && ws.length > 1) {
@@ -421,7 +442,7 @@ function renderStats() {
     html += '<section><h3>ЗА ЧТО ПЛАТИМ <span class="hint">наведите на строку</span></h3>';
     html += barList(partNames.map((name, i) => ({ name, usd: parts[i] ?? 0, fill: '#7a80a8', tip: `<b>${name}</b><br>${partTips[i]}` })), total);
     html += '</section>';
-    html += `<section><h3>ТРАТЫ ПО ЧАСАМ <span class="hint">дни недели × часы, за ${range === '7' ? 7 : 28} дн.</span></h3><div class="chart pix">${heatmap(all)}</div></section>`;
+    html += `<section><h3>ТРАТЫ ПО ЧАСАМ <span class="hint">дни недели × часы, за ${heatSpan()} дн.</span></h3><div class="chart pix">${heatmap(all)}</div></section>`;
     html += renderLimits();
     const projects = new Map();
     for (const d of days)
@@ -480,9 +501,11 @@ function renderTokens() {
   </div>`;
     const byWeek = days.length > 45;
     const rows = byWeek ? weeks(days) : days;
-    html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${span(days)}</span></h3><div class="chart pix">`;
-    html += barChart(rows, r => short(r.day), r => tokenTip(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r), 104, tokByKind, tokens);
-    html += '<div class="legend">' + KINDS.map(k => `<span><i style="background:${k.fill}"></i>${k.name}</span>`).join('') + '</div></div></section>';
+    if (days.length > 1) {
+        html += `<section><h3>${byWeek ? 'ПО НЕДЕЛЯМ' : 'ПО ДНЯМ'} <span class="hint">${span(days)}</span></h3><div class="chart pix">`;
+        html += barChart(rows, r => short(r.day), r => tokenTip(byWeek ? 'неделя с ' + short(r.day) : `${WEEKDAYS[weekday(r.day)]}, ${short(r.day)}`, r), 104, tokByKind, tokens);
+        html += '<div class="legend">' + KINDS.map(k => `<span><i style="background:${k.fill}"></i>${k.name}</span>`).join('') + '</div></div></section>';
+    }
     const parts = KINDS.map((k, i) => ({ name: k.name, usd: days.reduce((a, d) => a + (d.tokParts[i] ?? 0), 0), fill: k.fill, tip: `<b>${k.name}</b><br>${k.tip}` }));
     const rest = days.reduce((a, d) => a + unsplit(d), 0);
     if (rest > 0)
