@@ -179,7 +179,7 @@ function plateOf(p, st, now) {
 }
 // ── trips: corridor → lift → lobby, and back ───────────────────────────────
 const WALK = 7;
-const HOLD = 3000; // ms the cursor stays on a desk before its plate comes out
+const HOLD = 1000; // ms the cursor stays on a desk before its plate comes out
 const TRIP = {
     down: { floor: [0, 0.38], board: [0.38, 0.44], ride: [0.44, 0.78], lobby: [0.78, 1] },
     up: { lobby: [0, 0.22], board: [0.22, 0.28], ride: [0.28, 0.62], floor: [0.62, 1] },
@@ -821,12 +821,14 @@ function sky(c, w, h, tm, t) {
 // ── layout ─────────────────────────────────────────────────────────────────
 // a cell is 48×61: two info lines (what it does; model and money) · bubble · desk · name plate · slab.
 // A cell's `top` is where its scene starts, after the first 6 px of the info lines.
-const FL = { pad: 6, shaft: 19, plaque: 54, cw: 48, rowH: 61, info: 6, roof: 24, ground: 10, minCols: 8, maxCols: 12 };
+const FL = { pad: 6, shaft: 19, plaque: 54, cw: 48, rowH: 61, info: 6, roof: 24, ground: 10, minCols: 8, maxCols: 12, fewCols: 3, zoom: 1.6 };
+// desks in a row on a stage this wide: labels have a size floor, so a narrow stage gets a taller building, not a smaller one
+const colsFit = (width) => width ? Math.max(FL.fewCols, Math.min(FL.maxCols, Math.floor((width / FL.zoom - 2 * FL.pad - FL.shaft - FL.plaque) / FL.cw))) : FL.maxCols;
 const RACK = { w: 24, h: 36, shelf: 5, steps: [0, 60, 180, 300, 600, 900, 1800] }; // a shelf lights up at each age, in seconds
 const shellColor = (s) => s.status === 'failed' ? '#e05a5a' : s.status === 'completed' ? '#4ade80' : s.status === 'running' ? GOLD : '#8a8fb0';
-function layout(b, room, key, shells) {
+function layout(b, room, key, shells, fit) {
     const f = FIGS[room.fig];
-    const cols = Math.max(FL.minCols, Math.min(FL.maxCols, ...b.floors.map(fl => fl.cells.length)));
+    const cols = Math.min(fit, Math.max(FL.minCols, Math.min(FL.maxCols, ...b.floors.map(fl => fl.cells.length))));
     const x0 = FL.pad + FL.shaft + FL.plaque, width = x0 + cols * FL.cw + FL.pad;
     // a task of several sessions gets a line under the roof saying which one is at work now
     const roof = FL.roof + (b.heads.length ? 7 : 0);
@@ -836,12 +838,22 @@ function layout(b, room, key, shells) {
     // a cell is known by its desk's type, the one sitting there by the agent's id; trips and mail look up the person
     const cells = new Map(), people = new Map();
     // the heads of started sessions: right of the boss, then left, as many as the room holds
+    const spare = [];
     b.heads.forEach((h, i) => {
         const k = Math.floor(i / 2) + 1, x = i % 2 === 0 ? bx + 2 * FL.cw + (k - 1) * FL.cw : bx - k * FL.cw;
         if (x >= x0 && x + FL.cw <= x0 + cols * FL.cw)
             people.set(h.key, { x, top: y + FL.info, sx: x + 12, sy: y + FL.info + 46 });
+        else
+            spare.push(h);
     });
     y += FL.rowH;
+    // those the room did not hold sit in rows under it: a narrow cabinet grows down
+    const annex = y, annexRows = Math.ceil(spare.length / cols);
+    spare.forEach((h, i) => {
+        const x = x0 + (i % cols) * FL.cw, top = annex + Math.floor(i / cols) * FL.rowH + FL.info;
+        people.set(h.key, { x, top, sx: x + 12, sy: top + 46 });
+    });
+    y += annexRows * FL.rowH;
     // the server room exists while there is something to show, right under the cabinet: no scrolling to it
     const srv = shells ? y : 0;
     if (shells)
@@ -863,7 +875,7 @@ function layout(b, room, key, shells) {
     }
     const lobby = y + FL.info;
     const couchX = x0 + 60, couchW = width - FL.pad - 12 - couchX;
-    return { key, f, srv, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, people, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
+    return { key, f, srv, annex, annexRows, cols, x0, width, height: lobby - FL.info + FL.rowH + FL.ground, roof, floors, cells, people, boss, lobby, couchX, couchW, seats: Math.max(1, Math.floor((couchW - 4) / 22)) };
 }
 export function mountFloors(scene, overlay, onError) {
     const ctx = scene.getContext('2d'), octx = overlay.getContext('2d');
@@ -892,20 +904,36 @@ export function mountFloors(scene, overlay, onError) {
         built = building(st, now);
         const room = OFFICES[style.office] ?? OFFICES.cozy;
         const shells = !!st.shells?.length;
-        const key = style.office + '|' + shells + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + '=' + (c.person?.key ?? '')).join(',')).join('/');
+        const fit = colsFit(scene.parentElement.clientWidth);
+        const key = style.office + '|' + shells + '|' + fit + '|' + built.heads.map(h => h.key).join(',') + '|' + built.floors.map(f => f.name + ':' + f.cells.map(c => c.key + '=' + (c.person?.key ?? '')).join(',')).join('/');
         if (L && L.key === key) {
             // the same seats, fresh people: money and who went home change without a new layout
             L.floors.forEach((fl, i) => { fl.def = built.floors[i]; });
             return;
         }
-        L = layout(built, room, key, shells);
+        L = layout(built, room, key, shells, fit);
         if (seats.couch.length !== L.seats)
-            seats.couch = Array.from({ length: L.seats }, (_, i) => seats.couch[i] ?? null);
+            refitCouch(L.seats);
         if (scene.width !== L.width || scene.height !== L.height) {
             scene.width = L.width;
             scene.height = L.height;
             scene.style.aspectRatio = `${L.width} / ${L.height}`;
             sizeOverlay();
+        }
+    }
+    // the building changed width: those past the couch's end move to free places, the rest count as not seated
+    function refitCouch(n) {
+        seats.couch = Array.from({ length: n }, (_, i) => seats.couch[i] ?? null);
+        for (const [key, m] of mem) {
+            if (m.trip?.from === 'couch')
+                m.trip.fromSeat = Math.min(m.trip.fromSeat, n - 1);
+            if (m.place !== 'couch' || (m.seat >= 0 && m.seat < n))
+                continue;
+            m.seat = seats.couch.indexOf(null);
+            if (m.seat >= 0)
+                seats.couch[m.seat] = key;
+            if (m.trip?.to === 'couch')
+                m.trip.toSeat = m.seat;
         }
     }
     function takeSeat(kind, key) {
@@ -1012,7 +1040,7 @@ export function mountFloors(scene, overlay, onError) {
         // «в работе» как на сервере и в списке сессий: незавершённые агенты и занятый руководитель
         const heads = st.sessions ?? [];
         const working = st.agents.filter(a => a.isWorking).length + heads.filter(h => h.isBusy).length;
-        labels.push({ x: width / 2, y: 7.5, text: st.office.title || 'AGENT OFFICE', px: 5, color: st.office.accent ?? GOLD, display: true, stroke: false });
+        labels.push({ x: x0 + L.cols * FL.cw / 2, y: 7.5, text: st.office.title || 'AGENT OFFICE', px: 5, color: st.office.accent ?? GOLD, display: true, stroke: false, maxw: L.cols * FL.cw - 46 });
         labels.push({ x: width / 2, y: 18, text: `в работе ${working} · агентов ${st.agents.length}`, px: 4.2, color: '#ffffff', w: 600 });
         // how long anyone worked at the left edge: joined across the head, agents and background commands
         const worked = workedNow(st, now);
@@ -1049,10 +1077,18 @@ export function mountFloors(scene, overlay, onError) {
         R(c, xL, P + 46, xR - xL, 1, room.line || shade(room.floor, 0.6));
         R(c, xL, P + 53, xR - xL, 2, room.slab);
         doorTops.push(P);
+        for (let r = 0; r < L.annexRows; r++) {
+            const top = L.annex + r * FL.rowH + FL.info;
+            R(c, xL, top - FL.info, xR - xL, 46 + FL.info, shade(room.wall, 0.93));
+            R(c, xL, top + 46, xR - xL, 7, shade(room.floor, 0.8));
+            R(c, xL, top + 46, xR - xL, 1, room.line || shade(room.floor, 0.6));
+            R(c, xL, top + 53, xR - xL, 2, room.slab);
+            doorTops.push(top);
+        }
         const arrived = flights.filter(fl => t - fl.t0 >= 1.4).length;
         whiteboard(c, xL + 2, P - FL.info + 2, FL.plaque - 6, 19);
         labels.push({ x: xL + 4, y: P - FL.info + 3.3, text: 'КАБИНЕТ', px: 3.4, color: '#2445a8', w: 600, align: 'left', stroke: false });
-        labels.push({ x: xL + 4, y: P - FL.info + 8.6, text: 'сдано работ: ' + arrived, px: 3.1, color: '#2a2a33', align: 'left', stroke: false });
+        labels.push({ x: xL + 4, y: P - FL.info + 8.6, text: 'сдано работ: ' + arrived, px: 3.1, color: '#2a2a33', align: 'left', maxw: FL.plaque - 10, stroke: false });
         labels.push({ x: xL + 4, y: P - FL.info + 13.8, text: money(st.cost) + ' всего', px: 3.1, color: '#1f7a3a', w: 600, align: 'left', stroke: false });
         // floors
         for (const fl of L.floors) {

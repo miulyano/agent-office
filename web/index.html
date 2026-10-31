@@ -15,7 +15,7 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, Helvetica, sans-serif; }
-  body { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: auto 1fr; height: 100vh; }
+  body { display: grid; grid-template-columns: minmax(0, 1fr) min(var(--side, 340px), calc(100vw - 560px)); grid-template-rows: auto 1fr; height: 100vh; }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: var(--wall); }
   ::-webkit-scrollbar-thumb { background: var(--floor); border: 2px solid var(--wall); }
@@ -30,8 +30,8 @@
   header .plate:empty { display: none; }
   .p-claude { --pc: var(--claude); }
   .p-codex { --pc: var(--codex); }
-  header .title { font-weight: 700; letter-spacing: .04em; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  header .status { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  header .title { min-width: 0; font-weight: 700; letter-spacing: .04em; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header .status { min-width: 0; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   header .spacer { flex: 1; }
   header button { flex: none; padding: 4px 10px; }
   #shot { display: inline-flex; align-items: center; gap: 6px; }
@@ -57,10 +57,10 @@
   .bar .note button.mini { padding: 1px 7px; margin: 0 4px; font-size: 11px; }
   .spin { display: inline-block; width: 8px; height: 8px; margin-right: 7px; background: var(--gold); animation: blink .6s steps(2, jump-none) infinite; }
   .bar .k { font: 600 11px Menlo, monospace; letter-spacing: .1em; text-transform: uppercase; margin-right: 6px; }
-  .bar .group { display: flex; align-items: center; }
+  .bar .group { display: flex; flex-wrap: wrap; align-items: center; min-width: 0; }
 
   /* переключатель-табличка вместо системного списка */
-  .seg { display: inline-flex; background: var(--wall); margin: var(--px); }
+  .seg { display: inline-flex; flex-wrap: wrap; background: var(--wall); margin: var(--px); }
   .seg button { box-shadow: none; margin: 0; background: transparent; color: var(--muted); font-weight: 500; padding: 4px 10px; }
   .seg button:hover { color: var(--text); background: var(--panel); }
   .seg button.on { background: var(--plate); color: var(--ink); font-weight: 700; }
@@ -75,25 +75,41 @@
   .stage canvas.labels { position: absolute; inset: 0; height: 100%; pointer-events: none; image-rendering: auto; }
   .err { --c: var(--off); margin: 12px var(--gap) 0; padding: 8px 12px; background: #2a1820; color: #ffb0b0; font: 12px Menlo, monospace; white-space: pre-wrap; }
 
-  aside { border-left: var(--px) solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-  aside section { padding: 14px var(--gap); overflow: auto; }
-  aside section.sessions { max-height: 45%; border-bottom: var(--px) solid var(--line); flex: none; }
-  aside section.log { flex: 1; min-height: 0; }
+  aside { position: relative; border-left: var(--px) solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; overflow-wrap: anywhere; }
+  /* ручка ширины колонки: лежит на левой границе, при наведении граница золотая */
+  .grip { position: absolute; left: calc(-1 * var(--px)); top: 0; bottom: 0; width: 8px; z-index: 1; cursor: col-resize; touch-action: none; outline: none; }
+  .grip::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: var(--px); }
+  /* разделитель сессий и журнала: лежит на границе между ними */
+  .split { position: relative; flex: none; height: 0; z-index: 1; cursor: row-resize; touch-action: none; outline: none; }
+  .split::before { content: ''; position: absolute; left: 0; right: 0; top: -7px; height: 8px; }
+  .split::after { content: ''; position: absolute; left: 0; right: 0; top: calc(-1 * var(--px)); height: var(--px); }
+  .grip:hover::after, .grip:focus-visible::after, .grip.drag::after, .split:hover::after, .split:focus-visible::after, .split.drag::after { background: var(--gold); }
+  aside details { padding: 0 var(--gap) 14px; overflow: auto; }
+  /* пока разделитель не трогали, высоту задаёт список, но не больше 45% */
+  aside .sessions { height: var(--split, auto); max-height: var(--split, 45%); border-bottom: var(--px) solid var(--line); flex: none; }
+  aside .log { flex: 1; min-height: 0; }
+  /* свёрнутая часть — полоска, вторая забирает всю высоту; разделять нечего. Обе разом не сворачиваются */
+  aside .log:not([open]) { flex: none; }
+  aside:has(.log:not([open])) .sessions { height: auto; max-height: none; flex: 1; }
+  aside .sessions.fold:not([open]) { height: auto; max-height: none; flex: none; }
+  aside:has(.fold:not([open])) .split { display: none; }
+  /* кликается вся полоска, а не только слово в заголовке; при прокрутке заголовок остаётся наверху */
+  .fold summary { position: sticky; top: 0; z-index: 1; background: var(--panel); list-style: none; cursor: pointer; margin: 0 calc(-1 * var(--gap)); padding: 10px var(--gap) 8px; }
+  .fold:not([open]) summary { margin-bottom: -14px; padding-bottom: 10px; }
+  .fold summary::-webkit-details-marker { display: none; }
+  .fold summary h2 { flex-wrap: wrap; margin: 0; overflow-wrap: normal; justify-content: flex-start; gap: 0 6px; }
+  .fold summary h2::before { content: '▾'; }
+  .fold:not([open]) summary h2::before { content: '▸'; }
+  .fold summary:hover h2 { color: var(--text); }
   aside h2 { margin: 0 0 10px; font: 600 11px Menlo, monospace; letter-spacing: .12em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
-  aside h2 label { font: 500 12px -apple-system, Helvetica, sans-serif; letter-spacing: 0; cursor: pointer; display: flex; align-items: center; gap: 7px; }
 
-  /* флажок: пиксельный квадрат с галочкой */
-  input[type=checkbox] { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; margin: 0; background: var(--wall); box-shadow: inset 0 0 0 var(--px) var(--rim); cursor: pointer; display: grid; place-content: center; }
-  input[type=checkbox]:checked { background: var(--gold); box-shadow: inset 0 0 0 var(--px) #a07d1c; }
-  input[type=checkbox]:checked::after { content: ''; width: 6px; height: 3px; border: solid var(--ink); border-width: 0 0 2px 2px; transform: translate(0, -1px) rotate(-45deg); }
-
-  .sess { --c: transparent; position: relative; display: block; width: calc(100% - 2 * var(--px)); text-align: left; margin: var(--px) var(--px) 8px; padding: 8px 10px 8px 14px; background: var(--bg); font: inherit; letter-spacing: 0; }
+  .sess { --c: transparent; position: relative; display: block; width: calc(100% - 2 * var(--px)); text-align: left; margin: var(--px) var(--px) 6px; padding: 6px 10px 6px 14px; background: var(--bg); font: inherit; letter-spacing: 0; }
   .sess::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--pc); }
-  .sess .tag { margin-right: 6px; color: var(--pc); font: 600 10px Menlo, monospace; font-style: normal; }
-  /* фильтр провайдера: сумма за сегодня под названием */
-  .seg.prov { display: flex; margin: 0 var(--px) 10px; }
-  .seg.prov button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 4px; line-height: 1.2; }
-  .seg.prov small { font: 500 11px Menlo, monospace; opacity: .8; }
+  /* фильтр провайдера в строке заголовка: каждый своим цветом */
+  .seg.prov { display: flex; flex: none; flex-wrap: nowrap; gap: 8px; margin: 0 0 0 auto; background: none; box-shadow: none; }
+  .seg.prov button { padding: 2px 1px 3px; color: var(--pc, var(--muted)); opacity: .75; font: 500 11px Menlo, monospace; letter-spacing: 0; }
+  .seg.prov button:hover { background: none; opacity: 1; }
+  .seg.prov button.on { background: none; color: var(--pc, var(--text)); opacity: 1; font-weight: 600; box-shadow: inset 0 calc(-1 * var(--px)) 0 var(--pc, var(--gold)); }
   .sess:hover { background: var(--floor); }
   .sess.sel { --c: var(--gold); background: var(--floor); }
   .sess .t { display: flex; gap: 8px; align-items: center; font-weight: 600; }
@@ -101,6 +117,7 @@
   .sess.kid { width: calc(100% - 2 * var(--px) - 14px); margin-left: calc(var(--px) + 14px); }
   .sess .br { color: var(--pc); opacity: .8; font-family: Menlo, monospace; font-size: 10px; }
   .sess .t span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess.pin .t::after { content: 'закреплена'; flex: none; margin-left: auto; color: var(--gold); font: 500 10px Menlo, monospace; }
   .sess .m { color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; padding-left: 16px; }
   .sess .d { width: 8px; height: 8px; border-radius: 50%; background: #4a4d68; flex: none; }
   .sess .d.live { background: var(--ok); }
@@ -112,9 +129,15 @@
   .line b { color: var(--gold); font-weight: 600; }
   .empty { color: var(--muted); }
   @media (max-width: 900px) {
-    body { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; height: auto; }
+    body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; height: auto; }
+    /* шапка в две строки: название, потом статус, кнопки и сумма */
+    header { flex-wrap: wrap; row-gap: 6px; }
+    header .title { flex: 1 1 60%; }
     aside { border-left: 0; border-top: var(--px) solid var(--line); }
-    aside section.sessions { max-height: none; }
+    .grip, .split { display: none; }
+    aside .sessions { height: auto; max-height: none; }
+    /* колонка крутится вместе со страницей: своя прокрутка отвязала бы заголовки от неё */
+    aside details { overflow: visible; }
   }
 </style>
 </head>
@@ -143,15 +166,16 @@
   </div></div>
 </main>
 <aside>
-  <section class="sessions">
-    <h2>СЕССИИ <label><input type="checkbox" id="follow"> следить за активной</label></h2>
-    <div class="seg prov" id="prov"></div>
+  <div class="grip" id="grip" role="separator" aria-orientation="vertical" aria-label="Ширина колонки" aria-valuemin="260" aria-valuemax="720" aria-valuenow="340" tabindex="0" title="Потяни, чтобы изменить ширину. Двойной клик вернёт обычную"></div>
+  <details class="sessions fold" id="sessionsPanel" open>
+    <summary><h2>СЕССИИ <span class="seg prov" id="prov"></span></h2></summary>
     <div id="sessions"><div class="empty">Ищу сессии…</div></div>
-  </section>
-  <section class="log">
-    <h2>ЖУРНАЛ</h2>
+  </details>
+  <div class="split" id="split" role="separator" aria-orientation="horizontal" aria-label="Высота сессий" aria-valuenow="45" tabindex="0" title="Потяни, чтобы поделить колонку между сессиями и журналом. Двойной клик вернёт как было"></div>
+  <details class="log fold" id="logPanel" open>
+    <summary><h2>ЖУРНАЛ</h2></summary>
     <div id="log"><div class="empty">Пока тихо.</div></div>
-  </section>
+  </details>
 </aside>
 <script type="module">
 // метка в адресе: после правок office.js браузер не держит старый модуль
@@ -161,19 +185,75 @@ const { funnyName, pngOf } = await import('./shot.js?' + Date.now())
 
 const $ = id => document.getElementById(id)
 const logBox = $('log'), dot = $('dot'), status = $('status')
-const titleEl = $('title'), list = $('sessions'), follow = $('follow'), total = $('total'), plate = $('plate'), provBox = $('prov')
+const titleEl = $('title'), list = $('sessions'), total = $('total'), plate = $('plate'), provBox = $('prov')
 const PROVIDERS = { all: 'Все', claude: 'Claude', codex: 'Codex' }
 
 let sessions = []
-let current = location.hash.slice(1)   // выбранная сессия живёт в адресе
+let current = location.hash.slice(1)   // закреплённая сессия живёт в адресе
+let auto = !current   // офис сам идёт за активной сессией, пока её не выбрали в списке
 let live = null, lastText = '', lastDraw = 0
 let provider = 'all'
 try { provider = localStorage.getItem('office.provider') || 'all' } catch {}
 if (!(provider in PROVIDERS)) provider = 'all'
 
-follow.checked = !current
 function save(key, value) { try { localStorage.setItem(key, value) } catch {} }
-try { if (!current && localStorage.getItem('office.follow') === '0') follow.checked = false } catch {}
+
+// правая колонка: ручки тянут мышью или стрелками, двойной клик возвращает как было
+const grip = $('grip'), split = $('split'), aside = grip.parentElement, SIDE = 340, PANE = 96
+function handle(el, at, keys, now, set, reset, keep) {
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault()
+    el.setPointerCapture(e.pointerId)
+    el.classList.add('drag')
+  })
+  el.addEventListener('pointermove', e => { if (el.hasPointerCapture(e.pointerId)) set(at(e)) })
+  el.addEventListener('lostpointercapture', () => { el.classList.remove('drag'); keep() })
+  el.addEventListener('dblclick', () => { reset(); keep() })
+  el.addEventListener('keydown', e => {
+    if (!keys[e.key]) return
+    e.preventDefault()
+    set(now() + keys[e.key])
+    keep()
+  })
+}
+// офису остаётся не меньше 560 точек. Окно ограничивает только показ: в широком вернётся выбранная ширина
+let side = SIDE
+const tellSide = () => grip.setAttribute('aria-valuenow', Math.max(260, Math.min(side, innerWidth - 560)))
+function setSide(w) {
+  side = Math.round(Math.max(260, Math.min(w, 720)))
+  document.body.style.setProperty('--side', side + 'px')
+  tellSide()
+}
+try { setSide(Number(localStorage.getItem('office.side')) || SIDE) } catch {}
+handle(grip, e => Math.min(innerWidth - e.clientX, innerWidth - 560), { ArrowLeft: 16, ArrowRight: -16 }, () => aside.offsetWidth, setSide, () => setSide(SIDE), () => save('office.side', side))
+addEventListener('resize', tellSide)
+// доля сессий в высоте колонки в процентах, 0 — разделитель не трогали. Окно ограничивает только показ: каждой части не меньше PANE точек
+let share = 0
+function showShare() {
+  const h = aside.clientHeight, lim = h >= 2 * PANE ? PANE / h * 100 : 0
+  const shown = share && Math.max(lim, Math.min(share, 100 - lim))
+  if (shown) aside.style.setProperty('--split', shown + '%')
+  else aside.style.removeProperty('--split')
+  split.setAttribute('aria-valuenow', Math.round(shown || 45))
+}
+function setShare(p) {
+  share = Math.round(p * 10) / 10
+  showShare()
+}
+addEventListener('resize', showShare)
+const setSplit = h => setShare(Math.max(PANE, Math.min(h, aside.clientHeight - PANE)) / aside.clientHeight * 100)
+try { setShare(Number(localStorage.getItem('office.split')) || 0) } catch {}
+handle(split, e => e.clientY - aside.getBoundingClientRect().top, { ArrowUp: -24, ArrowDown: 24 }, () => split.previousElementSibling.offsetHeight, setSplit, () => setShare(0), () => save('office.split', share))
+// свёрнутая часть остаётся свёрнутой после перезагрузки; обе разом не сворачиваются: вторая раскрывает первую
+const panels = [[$('sessionsPanel'), 'office.sessions'], [$('logPanel'), 'office.log']]
+for (const [panel, key] of panels) {
+  try { if (localStorage.getItem(key) === '0') panel.open = false } catch {}
+  panel.addEventListener('toggle', () => {
+    save(key, panel.open ? '1' : '0')
+    const other = panels.find(([p]) => p !== panel)[0]
+    if (!panel.open && !other.open) other.open = true
+  })
+}
 
 const who = w => roleName(w, live?.office)
 const shown = () => sessions.filter(s => provider === 'all' || s.provider === provider)
@@ -232,9 +312,8 @@ function draw(st) {
 }
 
 function drawProviders() {
-  const today = k => sessions.filter(s => k === 'all' || s.provider === k).reduce((a, s) => a + (s.today ?? 0), 0)
   const html = Object.entries(PROVIDERS).map(([k, name]) =>
-    `<button data-k="${k}" class="${k === provider ? 'on' : ''}" title="Потрачено сегодня">${name}<small>${money(today(k))}</small></button>`).join('')
+    `<button data-k="${k}" class="p-${k}${k === provider ? ' on' : ''}">${name}</button>`).join('')
   if (html !== provBox.dataset.html) {
     provBox.dataset.html = html
     provBox.innerHTML = html
@@ -263,11 +342,11 @@ function drawList() {
     const usd = s.cost ? ` · <span class="usd">${money(s.cost)}</span>` : ''
     const fon = s.shells ? ` · <span class="fon">фон ${s.shells}</span>` : ''
     // минуты, а не секунды: строка меняется редко, и клик не попадает в заменённую кнопку
-    const worked = workedNow(s, Date.now()), time = worked >= 60000 ? ` · время ${span(worked)}` : ''
+    const worked = workedNow(s, Date.now()), time = worked >= 60000 ? ` · ${span(worked)}` : ''
     const branch = s.kid && s.branch ? ` · <span class="br">${esc(s.branch)}</span>` : ''
-    return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}">
+    return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.id === current && !auto ? ' pin' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}"${s.id === current && !auto ? ' title="Клик вернёт слежение за активной сессией"' : ''}>
       <div class="t"><span class="d ${cls}"></span><span>${s.kid ? '↳ ' : ''}${esc(s.title)}</span></div>
-      <div class="m"><i class="tag">${PROVIDERS[s.provider]}</i>${esc(s.project)}${branch} · ${work}${time}${agents}${fon}${usd}</div></button>`
+      <div class="m">${esc(s.project)}${branch} · ${work}${time}${agents}${fon}${usd}</div></button>`
   }).join('')
   // не трогать список без перемен: иначе клик попадает в уже заменённую кнопку
   if (html !== list.dataset.html) {
@@ -279,9 +358,9 @@ function drawList() {
 list.addEventListener('click', e => {
   const b = e.target.closest('.sess')
   if (!b) return
-  follow.checked = false
-  save('office.follow', '0')
-  pick(b.dataset.id)
+  // клик закрепляет сессию, повторный по закреплённой снова отдаёт выбор офису
+  auto = !auto && b.dataset.id === current
+  auto ? autoPick() : pick(b.dataset.id)
 })
 
 provBox.addEventListener('click', e => {
@@ -290,18 +369,13 @@ provBox.addEventListener('click', e => {
   provider = b.dataset.k
   save('office.provider', provider)
   drawList()
-  if (follow.checked) autoPick()
-})
-
-follow.addEventListener('change', () => {
-  save('office.follow', follow.checked ? '1' : '0')
-  if (follow.checked) autoPick()
+  if (auto) autoPick()
 })
 
 function pick(id) {
-  if (id === current) return
+  history.replaceState(null, '', auto ? location.pathname + location.search : '#' + id)
+  if (id === current) return drawList()
   current = id
-  history.replaceState(null, '', '#' + id)
   lastText = ''
   floors.reset()
   drawList()
@@ -320,7 +394,8 @@ async function pollSessions() {
     if (!res.ok) throw new Error(res.status)
     sessions = await res.json()
     dot.classList.add('on')
-    if (follow.checked || !sessions.some(s => s.id === current)) autoPick()
+    if (!sessions.some(s => s.id === current)) auto = true
+    if (auto) autoPick()
     drawList()
   } catch {
     dot.classList.remove('on')
