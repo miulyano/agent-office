@@ -134,28 +134,52 @@ function doing(p, st, now) {
     const a = p.agent;
     // an agent's clock: how long it has worked; once done, how long it took; gone home, since when
     const home = { place: 'gone', pose: 'sit', icon: 'home', text: 'дома с', work: false, time: clockOf(a.endedAt || a.at || a.startedAt) };
-    const took = span((a.endedAt || a.at) - a.startedAt), sofar = span(now - a.startedAt);
+    const spent = span(workedNow(a, now));
     if (a.finished) {
         const since = now - a.endedAt;
         if (since < DONE)
-            return { place: 'desk', pose: 'sit', icon: 'done', text: 'сдал работу', work: false, time: took };
+            return { place: 'desk', pose: 'sit', icon: 'done', text: 'сдал работу', work: false, time: spent };
         if (since < AWAY)
-            return { place: 'couch', pose: 'sit', icon: 'rest', text: 'в лаунже', work: false, time: took };
+            return { place: 'couch', pose: 'sit', icon: 'rest', text: 'в лаунже', work: false, time: spent };
         return home;
     }
     const idle = now - (a.at || a.startedAt);
     if (a.isWorking && idle < THINK)
-        return { ...busy(a.tool, a.activity || a.desc), time: sofar };
+        return { ...busy(a.tool, a.activity || a.desc), time: spent };
     if (a.isWorking && idle < COFFEE)
-        return { place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true, time: sofar };
+        return { place: 'desk', pose: 'think', icon: 'think', text: 'думает', work: true, time: spent };
     if (a.isWorking)
-        return { place: 'cooler', pose: 'standDrink', icon: 'coffee', text: 'у кулера', work: false, time: sofar };
+        return { place: 'cooler', pose: 'standDrink', icon: 'coffee', text: 'у кулера', work: false, time: spent };
     if (now - a.endedAt < AWAY)
-        return { place: 'desk', pose: 'sleep', icon: 'sleep', text: 'спит', work: false, time: took };
+        return { place: 'desk', pose: 'sleep', icon: 'sleep', text: 'спит', work: false, time: spent };
     return home;
+}
+const counted = (n, one) => {
+    const d = n % 10, teen = n % 100 > 10 && n % 100 < 15;
+    return `за ${n} ${one}${teen || d === 0 || d > 4 ? 'ов' : d === 1 ? '' : 'а'}`;
+};
+function plateOf(p, st, now) {
+    const office = st.office;
+    if (p.boss) {
+        const h = p.head ?? st.sessions[0];
+        const since = h?.since ?? st.since;
+        const rows = h?.isBusy && since ? [['clock', span(now - since), 'запрос']] : [];
+        rows.push(['sum', span(h ? workedNow(h, now) : 0), counted(h?.requests ?? 0, 'запрос')]);
+        return { prop: deskOf(office, 'main')?.prop ?? 'crown', shirt: p.look.shirt, rows };
+    }
+    const a = p.agent, desk = deskOf(office, a.type);
+    // one desk, however many times it was called: copies count in full, this is labour, not the session's clock
+    const same = st.agents.filter(x => desk ? deskOf(office, x.type) === desk : x.type === a.type);
+    return {
+        prop: desk?.prop ?? office.guests[a.type]?.prop ?? 'cap', shirt: p.look.shirt, rows: [
+            ['clock', span(workedNow(a, now)), a.isWorking ? 'сейчас' : 'заняло'],
+            ['sum', span(same.reduce((sum, x) => sum + workedNow(x, now), 0)), counted(same.reduce((sum, x) => sum + (x.runs ?? 1), 0), 'вызов')],
+        ],
+    };
 }
 // ── trips: corridor → lift → lobby, and back ───────────────────────────────
 const WALK = 7;
+const HOLD = 3000; // ms the cursor stays on a desk before its plate comes out
 const TRIP = {
     down: { floor: [0, 0.38], board: [0.38, 0.44], ride: [0.44, 0.78], lobby: [0.78, 1] },
     up: { lobby: [0, 0.22], board: [0.22, 0.28], ride: [0.28, 0.62], floor: [0.62, 1] },
@@ -592,9 +616,10 @@ const GLYPH = {
     tool: ['.#.#.', '.###.', '..#..', '..#..', '..#..'], think: ['.....', '.....', '#.#.#', '.....', '.....'],
     coffee: ['.#.#.', '.....', '####.', '#..##', '####.'], done: ['....#', '...#.', '#.#..', '.#...', '.....'],
     sleep: ['####.', '..#..', '.#...', '####.', '.....'], walk: ['..#..', '.###.', '#.#.#', '..#..', '.#.#.'],
+    sum: ['#####', '.#...', '..#..', '.#...', '#####'],
     bad: ['#...#', '.#.#.', '..#..', '.#.#.', '#...#'], lift: ['#####', '#.#.#', '#.#.#', '#.#.#', '#####'], home: ['..#..', '.###.', '#####', '.#.#.', '.#.#.'], rest: ['..##.', '..#.#', '..#..', '###..', '##...'],
 };
-const ICON_COLOR = { clock: '#bfe3ff', home: '#e0a070', read: '#7fdcff', edit: '#ffd060', write: '#8af0a0', grep: '#ffa070', bash: '#60ff90', web: '#9ab8ff', phone: '#ff8ac8', skill: '#ffd060', tool: '#d8d8f0', think: '#d8d8f0', coffee: '#e0b080', done: '#8af0a0', sleep: '#a0a8d0', walk: '#d8d8f0', lift: '#d8d8f0', rest: '#c8a0ff' };
+const ICON_COLOR = { sum: '#ffd060', clock: '#bfe3ff', home: '#e0a070', read: '#7fdcff', edit: '#ffd060', write: '#8af0a0', grep: '#ffa070', bash: '#60ff90', web: '#9ab8ff', phone: '#ff8ac8', skill: '#ffd060', tool: '#d8d8f0', think: '#d8d8f0', coffee: '#e0b080', done: '#8af0a0', sleep: '#a0a8d0', walk: '#d8d8f0', lift: '#d8d8f0', rest: '#c8a0ff' };
 const DIM = 'rgba(235,235,250,0.45)'; // icons and figures of someone not at work
 function glyph(c, name, x, y, color = ICON_COLOR[name]) {
     const g = GLYPH[name];
@@ -607,6 +632,54 @@ function glyph(c, name, x, y, color = ICON_COLOR[name]) {
 }
 function banknote(c, x, y) { R(c, x, y, 7, 5, '#1f6a32'); R(c, x + 1, y + 1, 5, 3, '#4cb860'); R(c, x + 3, y + 1, 1, 3, '#1f6a32'); R(c, x + 2, y + 2, 3, 1, '#1f6a32'); }
 function coin(c, x, y) { R(c, x + 1, y, 2, 4, '#c08a10'); R(c, x, y + 1, 4, 2, '#c08a10'); R(c, x + 1, y + 1, 2, 2, GOLD); }
+// a desk's prop for its shelf; `k` is the dark colour that gives way on a dark wall
+const PROP = {
+    crown: ['y..y..y', 'yy.y.yy', 'yyyyyyy', 'yryyyby', 'yyyyyyy'],
+    headphones: ['.kkkkk.', 'k.....k', 'k.....k', 'r.....r', 'r.....r'],
+    camera: ['..kk...', 'kkkkkkk', 'kkccckk', 'kkcwckk', 'kkccckk', 'kkkkkkk'],
+    scissors: ['s.....s', '.s...s.', '..s.s..', '...s...', '.rr.rr.', '.rr.rr.'],
+    beret: ['...V...', '.vvvvv.', 'vvvvvvv', 'VVVVVVV'],
+    beretRed: ['...R...', '.rrrrr.', 'rrrrrrr', 'RRRRRRR'],
+    books: ['.rrrrr.', '.rwwwr.', 'bbbbbbb', 'bwwwwwb', '.yyyyy.', '.ywwwy.'],
+    chart: ['.....r.', '.....r.', '...y.r.', '...y.r.', '.b.y.r.', '.b.y.r.', 'wwwwwww'],
+    mic: ['..sss..', '..sss..', '..sss..', '.g.s.g.', '..ggg..', '...g...', '..ggg..'],
+    binoculars: ['kk...kk', 'kkk.kkk', 'kkkkkkk', 'kck.kck', 'kkk.kkk'],
+    script: ['pppppp.', '.wwwww.', '.wkkkw.', '.wwwww.', '.wkkkw.', '.wwwww.', '.pppppp'],
+    box: ['.ooooo.', 'oooOooo', 'OOOOOOO', 'oooOooo', 'oooOooo', 'oooOooo', 'OOOOOOO'],
+    download: ['...b...', '...b...', '.bbbbb.', '..bbb..', '...b...', 'g.....g', 'ggggggg'],
+    magnifier: ['.ggg...', 'g...g..', 'g.c.g..', 'g...g..', '.ggg...', '....bb.', '.....bb'],
+    layers: ['...c...', '.ccccc.', '...y...', '.yyyyy.', '...r...', '.rrrrr.'],
+    frame: ['OOOOOOO', 'OcccccO', 'OcbcccO', 'ObbbcbO', 'ObbbbbO', 'OOOOOOO'],
+    glasses: ['kkk.kkk', 'kckkkck', 'kkk.kkk'],
+    tablet: ['kkkkkk', 'kcccck', 'kcwwck', 'kcccck', 'kcwcck', 'kcccck', 'kkkkkk'],
+    clipboard: ['..ss..', 'bbssbb', 'bwwwwb', 'bwkkwb', 'bwwwwb', 'bwkkwb', 'bwwwwb', 'bbbbbb'],
+    paper: ['wwwww..', 'wkkkww.', 'wwwwww.', 'wkkkkw.', 'wwwwww.', 'wkkkww.', 'wwwwww.'],
+    cap: ['..bbb..', '.bbbbb.', '.bbbbb.', 'bbbbbbb'],
+};
+const PROP_INK = { y: '#f0c040', r: '#d04050', R: '#8f2f3a', v: '#8a50c0', V: '#5a3088', b: '#3a6ab0', c: '#9fe4ff', g: '#8a8a98', w: '#f4f1e8', o: '#d8a868', O: '#9a6a38', s: '#b0b0c0', p: '#c8a878', k: '#2a2a34' };
+// the plate speaks like the office's bubbles; its shelf is cut from the office's desks
+const PLATE = {
+    round: { line: '#1a1410', paper: '#ffffff', ink: '#1a1a22', soft: '#7a6a58' },
+    box: { line: '#3050a0', inner: '#90b0f0', paper: '#f8f8f8', ink: '#283048', soft: '#6a7898' },
+    holo: { line: '#1f5a6a', paper: '#10252c', ink: '#9ff0ff', soft: '#5fa8b8', dark: '#c8d0d8' },
+};
+const PROP_W = 9; // room on the shelf beside the plate
+function drawPlate(c, r, skin, x, y, w, h, shelf, plate) {
+    const ins = skin.inner ? 2 : 1;
+    R(c, x + 2, y, w, h, skin.line);
+    if (skin.inner)
+        R(c, x + 3, y + 1, w - 2, h - 2, skin.inner);
+    R(c, x + 2 + ins, y + ins, w - ins * 2, h - ins * 2, skin.paper);
+    R(c, x + 2 + ins, y + ins, 2, h - ins * 2, plate.shirt);
+    R(c, x, y + h, shelf, 1, r.deskTop);
+    R(c, x, y + h + 1, shelf, 1, r.deskD);
+    R(c, x + 4, y + h + 2, 2, 1, r.deskD);
+    R(c, x + shelf - 6, y + h + 2, 2, 1, r.deskD);
+    const sprite = PROP[plate.prop] ?? PROP.cap, sx = x + w + 4 + Math.floor((PROP_W - sprite[0].length) / 2), sy = y + h - sprite.length;
+    sprite.forEach((row, j) => { for (let i = 0; i < row.length; i++)
+        if (row[i] !== '.')
+            R(c, sx + i, sy + j, 1, 1, row[i] === 'k' ? skin.dark ?? PROP_INK.k : PROP_INK[row[i]]); });
+}
 // ── furniture ──────────────────────────────────────────────────────────────
 function drawChair(c, r, f, sx, sy) {
     const hy = sy - f.shin, tw = f.torso[0], bx = sx - Math.ceil(tw / 2) - 2, bh = Math.round(f.torso[1] * 0.7), L = r.line;
@@ -801,6 +874,12 @@ export function mountFloors(scene, overlay, onError) {
     const mem = new Map();
     const seats = { couch: [], cooler: [null, null] };
     const flights = [];
+    // the cursor on the page, not on the scene: the office scrolls under a still cursor.
+    // The plate waits until it has stayed HOLD on one desk
+    let mouse = null;
+    let held = { key: '', since: 0 };
+    scene.addEventListener('mousemove', e => { mouse = { x: e.clientX, y: e.clientY }; });
+    scene.addEventListener('mouseleave', () => { mouse = null; });
     function sizeOverlay() {
         const r = scene.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
         overlay.width = Math.round(r.width * dpr);
@@ -879,6 +958,26 @@ export function mountFloors(scene, overlay, onError) {
             flights.push({ key: p.key, t0: t, cost: p.agent.cost });
         m.finished = !!p.agent?.finished;
         return m;
+    }
+    // a label's width in scene pixels, under the size floor of drawLabels
+    function textWidth(text, weight, px) {
+        const k = overlay.width / scene.width, size = Math.round(Math.max(9 * (window.devicePixelRatio || 1), px * k));
+        octx.font = `${weight} ${size}px Menlo, "JetBrains Mono", monospace`;
+        return { w: octx.measureText(text).width / k, h: size / k };
+    }
+    function showPlate(c, labels, room, skin, geo, plate) {
+        const ins = skin.inner ? 2 : 1, px = 3.6, text = 12; // the stripe and the icon come first
+        const em = textWidth('0', 700, px).h, row = Math.max(7, Math.ceil(em)); // on a small stage the size floor outgrows the icon
+        const wide = Math.max(...plate.rows.map(([, value, word]) => textWidth(value, 700, px).w + 2 + textWidth(word, 400, px).w));
+        const w = Math.ceil(wide) + text + ins * 2 + 2, h = plate.rows.length * row + 1 + ins * 2, shelf = w + 4 + PROP_W;
+        const x = Math.min(geo.x + 1, L.width - FL.pad - shelf), y = geo.top + 7;
+        drawPlate(c, room, skin, x, y, w, h, shelf, plate);
+        plate.rows.forEach(([icon, value, word], i) => {
+            const ry = y + ins + i * row, tx = x + 2 + ins + text, vw = textWidth(value, 700, px).w, ty = ry + (row - em) / 2 + 0.4;
+            glyph(c, icon, x + 2 + ins + 4, ry + Math.floor((row - 5) / 2));
+            labels.push({ x: tx, y: ty, text: value, px, color: skin.ink, align: 'left', w: 700, stroke: false });
+            labels.push({ x: tx + vw + 2, y: ty, text: word, px, color: skin.soft, align: 'left', w: 400, stroke: false });
+        });
     }
     function render(now) {
         if (!st || !built || !L)
@@ -1270,6 +1369,14 @@ export function mountFloors(scene, overlay, onError) {
         lighting(c, width, height, tm, lights, room);
         for (const b of bubbles)
             bubble(c, f.bubble, b.icon, b.x, b.y, t); // over the light, readable at night
+        const r = mouse && scene.getBoundingClientRect();
+        const mx = r ? (mouse.x - r.left) / r.width * width : -1, my = r ? (mouse.y - r.top) / r.height * height : -1;
+        const under = desks.find(([p, g]) => p && !p.waiting && mx >= g.x && mx < g.x + (g.wide ? FL.cw * 2 : FL.cw) && my >= g.top - FL.info && my < g.top - FL.info + FL.rowH);
+        const key = under?.[0]?.key ?? '';
+        if (key !== held.key)
+            held = { key, since: now };
+        if (under && now - held.since >= HOLD)
+            showPlate(c, labels, room, PLATE[f.bubble], under[1], plateOf(under[0], st, now));
         return labels;
     }
     function drawLabels(labels, g = octx, dpr = window.devicePixelRatio || 1) {

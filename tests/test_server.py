@@ -799,6 +799,17 @@ class CodexSessionsTest(unittest.TestCase):
         st = server.state(THREAD)
         self.assertEqual((st['worked'], st['workingSince']), (200000, 0))
         self.assertNotIn('spans', st['agents'][0])
+        self.assertEqual(st['agents'][0]['worked'], 150000)
+        self.assertEqual((st['sessions'][0]['worked'], st['sessions'][0]['requests']), (100000, 1))
+
+    def test_guardian_counts_every_review(self):
+        now = time.time()
+        self.write(THREAD, meta() + event('task_started', iso(now - 300)) + event('task_complete', iso(now - 200)))
+        for child, age in (('child1', 250), ('child2', 150)):
+            self.write(child, meta(thread=child, source={'subagent': {'other': 'guardian'}}, parent_thread_id=THREAD)
+                       + event('task_started', iso(now - age)) + event('task_complete', iso(now - age + 10)))
+        [a] = server.state(THREAD)['agents']
+        self.assertEqual(a['runs'], 2)
 
     def test_codex_office_has_its_own_sign_and_no_generation(self):
         self.write(THREAD, meta() + context(ts=self.now()) + event('task_started', self.now()))
@@ -2126,6 +2137,56 @@ class BackgroundShellTest(unittest.TestCase):
         self.journal('s1', self.asked(1000), self.stopped(900))
         self.agent('s1', 'a1', self.asked(800), self.stopped(700))
         self.assertEqual(self.worked(), 200000)
+
+    def test_each_agent_reports_its_own_work_time(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(950), self.stopped(850))
+        self.agent('s1', 'a2', self.asked(700), self.stopped(650))
+        agents = {a['id']: a for a in server.state('s1')['agents']}
+        self.assertEqual((agents['a1']['worked'], agents['a1']['workingSince']), (100000, 0))
+        self.assertEqual(agents['a2']['worked'], 50000)
+        self.assertNotIn('spans', agents['a1'])
+
+    def test_agent_time_skips_the_pause_between_its_turns(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(900), self.stopped(850), self.asked(500), self.stopped(450))
+        [a] = server.state('s1')['agents']
+        self.assertEqual(a['worked'], 100000)
+
+    def test_running_agent_reports_when_its_stretch_began(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(30), finished=False)
+        [a] = server.state('s1')['agents']
+        self.assertEqual((a['worked'], a['workingSince']), (0, server.ms(self.ago(30))))
+
+    def test_each_head_reports_its_work_time_and_requests(self):
+        self.journal('s1',
+                     self.asked(1000), self.called('t1', 950), self.finished_now('t1', 940), self.stopped(900),
+                     self.asked(500), self.stopped(450))
+        [head] = server.state('s1')['sessions']
+        self.assertEqual((head['worked'], head['workingSince'], head['requests']), (150000, 0, 2))
+
+    def test_interrupt_is_not_a_request(self):
+        stop = line(type='user', timestamp=self.ago(950), cwd='/work/app', message={'role': 'user', 'content': '[Request interrupted by user]'})
+        self.journal('s1', self.asked(1000), stop, self.asked(500), self.stopped(450))
+        self.assertEqual(server.state('s1')['sessions'][0]['requests'], 2)
+
+    def test_agent_clock_stops_when_it_hands_in_its_work(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        self.agent('s1', 'a1', self.asked(100), self.called('b1', 100), self.in_background('b1', 'bg1', 99), self.stopped(98))
+        st = server.state('s1')
+        [a] = st['agents']
+        self.assertEqual((a['worked'], a['workingSince']), (2000, 0))
+        self.assertTrue(st['workingSince'])  # the command still counts for the session
+
+    def test_agent_counts_every_call_in_its_journal(self):
+        self.journal('s1', self.asked(1000), self.stopped(900))
+        again = line(type='user', timestamp=self.ago(500), cwd='/work/app', isMeta=True, message={'role': 'user', 'content': 'The coordinator sent a message'})
+        reminder = line(type='user', timestamp=self.ago(490), cwd='/work/app', isMeta=True, message={'role': 'user', 'content': '<system-reminder>x</system-reminder>'})
+        self.agent('s1', 'a1', self.asked(900), self.called('t1', 890), self.finished_now('t1', 880), self.stopped(850), again, reminder, self.stopped(450))
+        self.agent('s1', 'a2', self.stopped(400))
+        agents = {a['id']: a for a in server.state('s1')['agents']}
+        self.assertEqual((agents['a1']['runs'], agents['a2']['runs']), (2, 1))
 
     def test_running_background_command_counts_until_now(self):
         self.journal('s1', self.asked(300), self.called('b1', 300), self.in_background('b1', 'bg1', 299), self.stopped(298), age=298)

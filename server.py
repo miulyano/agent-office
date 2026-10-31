@@ -49,6 +49,7 @@ BG_LOST_S = 3 * 3600     # команда без итога дольше — п�
 CODEX_WORK = ('reasoning', 'custom_tool_call', 'custom_tool_call_output', 'function_call', 'function_call_output')
 INTERRUPTED = '[Request interrupted'
 NOT_WORK = (INTERRUPTED, '<command-name>', '<command-message>', '<local-command-')  # за такими записями работы нет: для часов это не запрос
+CALLED_AGAIN = 'The coordinator sent'  # так в журнале агента выглядит повторный вызов
 LOG_MAX = 80
 # $ за 1M токенов: вход, выход, чтение кэша. Цены меняются — правьте здесь.
 PRICES = {
@@ -348,6 +349,13 @@ def work_clock(spans, now_ms):
     return {'worked': int(total + reached - start), 'workingSince': 0}
 
 
+def own_clock(agent, now_ms):
+    """Часы агента. Сдал работу: они стоят, хотя его фоновая команда ещё идёт в общее время сессии."""
+    end = agent['endedAt']
+    spans = [[a, min(b, end)] for a, b in agent['spans'] if a < end] if end else agent['spans']
+    return work_clock(spans, now_ms)
+
+
 def clock_of(tails, agents, now_ms):
     return work_clock([s for t in tails for s in t.worked(now_ms)] + [s for a in agents for s in a['spans']], now_ms)
 
@@ -362,6 +370,7 @@ class Tail:
         self.first = 0
         self.last = 0          # время последней записи
         self.turn = 0          # начало текущего хода: последний запрос
+        self.requests = 0      # сколько запросов получил руководитель
         self.spans = []        # ходы: [начало, последняя запись]
         self.open = False      # последний ход ещё не закончен
         self.called = 0        # служебная запись: от неё считается работа, если за ней кто-то возьмётся
@@ -497,6 +506,9 @@ class Tail:
             if not d.get('isMeta') and not d.get('isCompactSummary') and not result:
                 self.turn = at or self.turn
             text = first_text(content)
+            own = not d.get('isMeta') and not text.startswith(NOT_WORK)
+            if not d.get('isCompactSummary') and not result and (own or text.startswith(CALLED_AGAIN)):
+                self.requests += 1
             if text.startswith(INTERRUPTED):
                 self.calling_tools.clear()  # результата прерванного вызова можно не дождаться
             if d.get('isMeta') or text.startswith(NOT_WORK):
@@ -628,6 +640,7 @@ class CodexTail(Tail):
             if event == 'task_started':
                 self.busy = True
                 self.turn = at or self.turn
+                self.requests += 1
                 self.work(at, True)
                 self.activity, self.activity_at = 'думает', at
             elif event in ('task_complete', 'turn_aborted'):
@@ -1869,6 +1882,7 @@ def agents_of(pdir, sid, now_ms):
             'at': t.activity_at or t.last,
             'finished': bool(meta.get('finished')),
             'events': t.events,
+            'runs': max(1, t.requests),
             'spans': t.worked(now_ms, not meta.get('finished')),
         })
     agents.sort(key=lambda a: a['startedAt'])
@@ -2057,7 +2071,7 @@ def codex_agents(kids, now_ms):
             a = agents[t.role if t.role == 'guardian' else t.thread] = {
                 'id': t.thread, 'type': t.role, 'desc': clip(t.nickname or t.prompt or 'проверяет действия', 40), 'isWorking': False,
                 'activity': '', 'startedAt': t.first, 'endedAt': 0, 'calls': 0, 'cost': 0.0, 'today': 0.0, 'model': '', 'tool': '',
-                'at': 0, 'finished': False, 'events': [], 'spans': []}
+                'at': 0, 'finished': False, 'events': [], 'runs': 0, 'spans': []}
         a['isWorking'] = a['isWorking'] or working
         a['activity'] = t.activity or a['activity'] or a['desc']
         a['calls'] += t.calls
@@ -2068,6 +2082,7 @@ def codex_agents(kids, now_ms):
         a['endedAt'] = 0 if a['isWorking'] else max(a['endedAt'], t.last)
         a['finished'] = not a['isWorking']
         a['events'] = (a['events'] + t.events)[-LOG_MAX:]
+        a['runs'] += max(1, t.requests)
         a['spans'] += t.worked(now_ms)
     return list(agents.values())
 
@@ -2159,7 +2174,10 @@ def room(tails, agents, office, heads, now_ms):
     log.sort(key=lambda x: x[0])
     head = heads[0]
     clock = clock_of(tails, agents, now_ms)
+    for h, t in zip(heads, tails):
+        h.update(work_clock(t.worked(now_ms), now_ms), requests=t.requests)
     for a in agents:
+        a.update(own_clock(a, now_ms))
         del a['events'], a['spans']
     shells = [dict(s, session=i) for i, t in enumerate(tails, 1) for s in t.shells.values() if shell_shown(s, now_ms)]
     # упавшие первыми: в плотной серверной они не должны уйти за край
