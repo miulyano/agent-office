@@ -948,10 +948,18 @@ def newest_roster(folder):
     return {}
 
 
+def retired(types, files):
+    """Агенты плагина без своего файла: журнал старой сессии помнит их и после обновления плагина.
+    Плагин судим только по его же файлам: не видно ни одного, значит он выключен или обновляется."""
+    plugins = {i['plugin'] for i in files.values() if i['plugin']}
+    return {t for t in types if ':' in t and t.split(':')[0] in plugins and t not in files}
+
+
 def staff_of(folder, roster):
     """Штат: состав сессии и файлы агентов. Описание из файла полнее, чем из журнала."""
     files = agent_files(folder)
-    merged = dict(roster)
+    gone = retired(roster, files)
+    merged = {t: d for t, d in roster.items() if t not in gone}
     for t, info in files.items():
         merged[t] = merged.get(t) or info['desc']
     return merged, files
@@ -1025,6 +1033,19 @@ def apply_manifest(old, folder):
     if man.get('boss'):
         office['bossLocked'] = man['boss']
     return office
+
+
+def clear_retired(office, files):
+    """Убрать столы ушедших агентов, закреплённые руками оставить; из очереди на раскладку уходят все. True, если что-то изменилось."""
+    pending = office.get('pending') or []
+    gone = retired([d['type'] for z in office['zones'] for d in z['desks'] if not d.get('locked')], files)
+    queued = retired(pending, files)
+    if not gone and not queued:
+        return False
+    zones = [dict(z, desks=[d for d in z['desks'] if d['type'] not in gone]) for z in office['zones']]
+    office['zones'] = [z for z in zones if z['desks']]
+    office['pending'] = [t for t in pending if t not in queued]
+    return True
 
 
 def seat(office, t, desc, files):
@@ -1411,12 +1432,14 @@ def watch_staff():
         if not office or office.get('auto') is False or running:
             continue  # офиса нет — автораскладка и так видит всех, тратить деньги без спроса не на что
         roster, files = staff_of(folder, roster)
+        cleared = clear_retired(office, files)
         seated = {d['type'] for z in office['zones'] for d in z['desks']}
         new = [t for t in roster if t not in BUILTIN and t not in seated]
         if new:
             for t in new:
                 seat(office, t, roster[t], files)
             office['pending'] = sorted(set(office.get('pending') or []) | set(new))
+        if new or cleared:
             write_office(folder, office)
         pending = tuple(office.get('pending') or [])
         if pending and AUTO_TRIED.get(folder) != pending and start_office(folder, roster, 'add') is not None:
