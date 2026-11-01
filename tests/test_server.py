@@ -1371,10 +1371,20 @@ class StaffTest(TeamCase):
         self.assertEqual(list(server.newest_roster(self.folder)), ['kit:a'])
 
     def test_agent_from_a_file_joins_before_any_session_lists_it(self):
-        self.team.plugin('kit', {'b': ('Новый', 'из файла')}, scope='project')
+        self.team.plugin('kit', {'a': ('Старый', ''), 'b': ('Новый', 'из файла')}, scope='project')
         roster, files = server.staff_of(self.folder, {'kit:a': 'из журнала'})
         self.assertEqual(roster, {'kit:a': 'из журнала', 'kit:b': 'из файла'})
         self.assertIn('kit:b', files)
+
+    def test_agent_gone_from_its_plugin_leaves_the_staff(self):
+        self.team.plugin('kit', {'camera': ('Оператор', 'снимает')}, scope='project')
+        roster, _ = server.staff_of(self.folder, {'kit:framer': 'из старого журнала', 'kit:camera': ''})
+        self.assertEqual(list(roster), ['kit:camera'])
+
+    def test_agents_we_cannot_check_stay(self):
+        # файлов плагина не видно (выключен, обновляется) и свой агент без двоеточия
+        roster, _ = server.staff_of(self.folder, {'kit:a': '', 'helper': ''})
+        self.assertEqual(sorted(roster), ['helper', 'kit:a'])
 
     def test_usage_counts_calls_and_order(self):
         pdir, _ = self.team.session('s', {'kit:a': ''})
@@ -1555,6 +1565,43 @@ class AutoStaffTest(TeamCase):
         self.team.session('new', {'p:a': ''}, age=5)
         server.watch_staff()
         self.assertNotIn('kit:x', self.seats(server.load_office(self.folder)))
+
+    def test_desk_of_a_retired_agent_is_cleared_for_good(self):
+        self.saved(pending=['p:a'])
+        self.team.plugin('p', {'camera': ('Оператор', 'снимает')}, scope='project')
+        self.team.session('old', {'p:a': ''})  # старая сессия помнит прежнее имя
+        server.watch_staff()
+        server.watch_staff()
+        office = server.load_office(self.folder)
+        self.assertEqual(sorted(self.seats(office)), ['main', 'p:camera'])
+        self.assertEqual(office['pending'], ['p:camera'])
+
+    def test_locked_desk_of_a_retired_agent_stays(self):
+        self.saved(zones=[{'id': 'код', 'name': 'КОД', 'desks': [{'type': 'main', 'name': 'Тимлид'}, {'type': 'p:a', 'name': 'Скаут', 'locked': True}]}])
+        self.team.plugin('p', {'b': ('Новичок', 'x')}, scope='project')
+        self.team.session('s', {'p:b': ''})
+        server.watch_staff()
+        self.assertIn('p:a', self.seats(server.load_office(self.folder)))
+
+    def test_locked_desk_of_a_retired_agent_is_not_left_pending(self):
+        self.saved(zones=[{'id': 'код', 'name': 'КОД', 'desks': [{'type': 'main', 'name': 'Тимлид'}, {'type': 'p:a', 'name': 'Скаут', 'locked': True}]}], pending=['p:a'])
+        self.team.plugin('p', {'b': ('Новичок', 'x')}, scope='project')
+        self.team.session('s', {'p:b': ''})
+        server.watch_staff()
+        office = server.load_office(self.folder)
+        self.assertIn('p:a', self.seats(office))  # otherwise the next generation drops the pinned desk
+        self.assertNotIn('p:a', office['pending'])
+
+    def test_pending_alone_is_cleared_and_saved_when_nobody_is_new(self):
+        self.saved(zones=[{'id': 'код', 'name': 'КОД', 'desks': [
+            {'type': 'main', 'name': 'Тимлид'}, {'type': 'p:a', 'name': 'Скаут', 'locked': True}, {'type': 'p:b', 'name': 'Новичок'}]}], pending=['p:a'])
+        self.team.plugin('p', {'b': ('Новичок', 'x')}, scope='project')
+        self.team.session('s', {'p:b': ''})
+        server.watch_staff()
+        office = server.load_office(self.folder)
+        self.assertEqual(sorted(self.seats(office)), ['main', 'p:a', 'p:b'])
+        self.assertEqual(office['pending'], [])
+        self.assertEqual(self.generated, [])
 
 
 class SessionViewTest(TeamCase):
