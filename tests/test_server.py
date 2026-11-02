@@ -1634,10 +1634,13 @@ class EpicTest(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.saved = server.PROJECTS, server.EPICS, server.DATA
-        server.PROJECTS, server.EPICS, server.DATA = (os.path.join(self.dir.name, p) for p in ('projects', 'epics', 'data'))
+        self.saved = server.PROJECTS, server.EPICS, server.DATA, server.SESSIONS_DIR, server.CODEX_SESSIONS, server.APP_SESSIONS
+        server.PROJECTS, server.EPICS, server.DATA, server.SESSIONS_DIR, server.CODEX_SESSIONS, server.APP_SESSIONS = (
+            os.path.join(self.dir.name, p) for p in ('projects', 'epics', 'data', 'sessions', 'нет-codex', 'app'))
+        os.makedirs(server.SESSIONS_DIR)
         server.TAILS.clear()
         server.VIEW_CACHE.clear()
+        server.APP_ROWS.clear()
         self.journal('-work-app', 'coord', assistant('c1', stop='end_turn'))
         self.journal('-work-app--wt-p1', 'w1', assistant('w1', stop='end_turn'))
         self.journal('-work-app--wt-p1-qa', 'q1', assistant('q1', stop='end_turn'))
@@ -1649,10 +1652,22 @@ class EpicTest(unittest.TestCase):
         self.view()
 
     def tearDown(self):
-        server.PROJECTS, server.EPICS, server.DATA = self.saved
+        server.PROJECTS, server.EPICS, server.DATA, server.SESSIONS_DIR, server.CODEX_SESSIONS, server.APP_SESSIONS = self.saved
         server.TAILS.clear()
         server.VIEW_CACHE.clear()
+        server.APP_ROWS.clear()
         self.dir.cleanup()
+
+    def app_session(self, *args, **kw):
+        TaskTest.app_session(self, *args, **kw)
+
+    def started_by(self, starter):
+        """The coordinator was opened by another session of its folder, earlier than it: the folder rule would tie them."""
+        self.journal('-work-app', starter, line(type='user', timestamp='2026-01-01T08:00:00Z', cwd='/work/app', message={'role': 'user', 'content': 'начни эпик'})
+                     + assistant('s1', stop='end_turn', ts='2026-01-01T08:00:00Z'))
+        self.journal('-work-app', 'coord', line(type='user', timestamp='2026-01-01T09:00:00Z', cwd='/work/app',
+                                                message={'role': 'user', 'content': 'Background (from the session that started this one):\nведи эпик'})
+                     + assistant('c1', stop='end_turn', ts='2026-01-01T09:00:00Z'))
 
     def journal(self, project, sid, text, age=0):
         os.makedirs(os.path.join(server.PROJECTS, project), exist_ok=True)
@@ -1771,12 +1786,21 @@ class EpicTest(unittest.TestCase):
         self.assertEqual({rows[sid]['task'] for sid in ('q1-again', 'w2-old', 'w1', 'q1', 'w2', 'c1')}, {'coord'})
 
     def test_a_coordinator_started_by_another_session_is_the_root_of_its_epic(self):
-        self.journal('-work-app', 'starter', assistant('s1', stop='end_turn'))
-        self.journal('-work-app', 'coord', line(type='user', timestamp='2026-01-01T09:00:00Z', cwd='/work/app',
-                                                message={'role': 'user', 'content': 'Background (from the session that started this one):\nведи эпик'})
-                     + assistant('c1', stop='end_turn'))
+        self.started_by('starter')
         rows = {s['id']: s for s in server.sessions()}
         self.assertEqual((rows['coord']['parent'], rows['coord']['task'], rows['w2']['task']), ('', 'coord', 'coord'))
+        # the app's own record of who started whom does not tie it either
+        self.app_session('local_s', 'starter')
+        self.app_session('local_c', 'coord', spawned_by='local_s')
+        server.APP_ROWS.clear()
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['coord']['parent'], rows['coord']['task']), ('', 'coord'))
+
+    def test_the_spawner_office_does_not_count_the_epic_it_started(self):
+        self.started_by('starter')
+        self.app_session('local_s', 'starter')
+        self.app_session('local_c', 'coord', spawned_by='local_s')
+        self.assertEqual([h['id'] for h in server.state('starter')['sessions']], ['starter'])
 
     def test_only_a_background_session_launched_in_a_role_worktree_is_that_role(self):
         # a chat opened in the worktree, or a session that went there with cd, is someone looking, not the role
@@ -1846,6 +1870,11 @@ class EpicTest(unittest.TestCase):
         self.assertEqual((w2['type'], w2['job'], w2['isWorking'], w2['activity']), ('e1/P2/writer', 'working', True, 'clippy+fmt clean'))
         self.assertEqual((r1['type'], r1['job'], r1['isWorking']), ('e1/research/Q1', 'working', True))
         self.assertEqual(agents['w1']['type'], 'e1/P1/writer')   # the landed P1's roles sit on the floor of landed packages
+
+    def test_roles_carry_their_runs(self):
+        # a desk plate counts how many times its agent was called; a role session is called at least once
+        agents = server.state('coord')['agents']
+        self.assertTrue(agents and all(a['runs'] >= 1 for a in agents), [(a['id'], a.get('runs')) for a in agents])
 
     def test_idle_coordinator_waits_for_the_roles_at_work_and_calls_the_owner(self):
         producer = server.state('coord')['producer']

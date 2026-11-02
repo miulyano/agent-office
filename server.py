@@ -2048,17 +2048,8 @@ def sessions():
     tails = claude_tails()  # раньше часов: закрытие сессии отмечается при чтении
     now = time.time()
     out = []
-    parent = task_tree(tails)
     views = epic_views()
-    by_id, by_path = epic_children(views)
-    # a worktree that is a coordinator's own folder would take every background session started in the repo
-    homes = {tails[c][0].home for c in views if c in tails}
-    children = by_id, {p: hit for p, hit in by_path.items() if p not in homes}
-    roles = {sid: child_of(sid, t.launched, children) for sid, (t, _, _) in tails.items() if sid not in views}
-    # an epic is a task of its own: its coordinator is the root, its role sessions hang under it named by their task
-    parent.update({sid: hit[0] for sid, hit in roles.items() if hit})
-    for sid in views:
-        parent.pop(sid, None)
+    parent, roles = epic_tree(tails, views)
     for sid, (t, pdir, mtime) in tails.items():
         # координатор эпика молчит, пока ждёт роли, но жив, пока его мод переписывает view.json
         live = now - mtime < LIVE_S or now - views.get(sid, (None, 0))[1] < VIEW_STALE_S
@@ -2295,6 +2286,21 @@ def epic_children(views):
     return out, paths
 
 
+def epic_tree(tails, views):
+    """Родители сессий с эпиками: эпик — своя задача, его координатор — корень, кто бы его ни запустил,
+    роли висят под ним. Отдаёт и роли: сессия → (координатор, роль с задачей) или None."""
+    parent = task_tree(tails)
+    by_id, by_path = epic_children(views)
+    # a worktree that is a coordinator's own folder would take every background session started in the repo
+    homes = {tails[c][0].home for c in views if c in tails}
+    children = by_id, {p: hit for p, hit in by_path.items() if p not in homes}
+    roles = {sid: child_of(sid, t.launched, children) for sid, (t, _, _) in tails.items() if sid not in views}
+    parent.update({sid: hit[0] for sid, hit in roles.items() if hit})
+    for sid in views:
+        parent.pop(sid, None)
+    return parent, roles
+
+
 def child_of(sid, launched, children):
     """Оркестратор и роль сессии: по её id, а фоновой сессии — по worktree роли, где её запустили.
     Чат, открытый в worktree, или сессия, зашедшая туда через cd, — не роль."""
@@ -2360,7 +2366,7 @@ def role_agent(kind, name, role, f, now_ms):
     return {
         'id': f[1], 'type': kind, 'desc': clip(t.title or name, 40), 'isWorking': working, 'job': job,
         'activity': detail or t.activity or name, 'startedAt': t.first, 'endedAt': 0 if working else t.last,
-        'calls': t.calls, 'cost': round(t.cost, 4), 'today': round(today_cost(t), 4), 'model': t.model, 'tool': t.tool,
+        'calls': t.calls, 'runs': max(1, t.requests), 'cost': round(t.cost, 4), 'today': round(today_cost(t), 4), 'model': t.model, 'tool': t.tool,
         'at': t.activity_at or t.last, 'finished': not working, 'events': t.events, 'spans': t.worked(now_ms, working),
     }
 
@@ -2453,7 +2459,7 @@ def state(sid):
             alive = live or now - view[1] < VIEW_STALE_S or t.running_shells(now * 1000) > 0
             return epic_room(sid, t, agents_of(pdir, sid, now * 1000), alive, t.busy and live, view[0], session_files(), now * 1000)
         # офис задачи — у её корня; порождённая сессия по клику показывает только своё
-        parent = task_tree(tails)
+        parent, _ = epic_tree(tails, epic_views())
         members = task_of(sid, tails, parent) if root_of(sid, parent) == sid else [sid]
         heads, agents, roster, chain = [], [], {}, []
         for i, s in enumerate(members, 1):
