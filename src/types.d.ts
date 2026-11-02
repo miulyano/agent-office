@@ -16,11 +16,13 @@ export type Agent = {
   runs?: number   // сколько раз агента вызвали
   worked?: number   // мс работы этого агента, идущий отрезок не входит
   workingSince?: number   // начало идущего отрезка; 0 — сейчас не работает
+  // an epic role: what its Claude Code job file says (working, idle, done, stopped)
+  job?: string
 }
 
 export type LogLine = { at: number; who: string; text: string }
 
-export type Producer = { isBusy: boolean; activity: string; at: number; calls: number; cost: number; model: string; tool: string }
+export type Producer = { isBusy: boolean; activity: string; at: number; calls: number; cost: number; model: string; tool: string; waitingFor?: string; owner?: boolean }
 // руководитель одной сессии задачи; первый — корень, остальные порождены приложением
 export type Head = Producer & { id: string; title: string; isLive: boolean; branch: string; since: number; worked?: number; workingSince?: number; requests?: number }
 
@@ -45,7 +47,9 @@ export type OfficeDesk = { type: string; name: string; short?: string; prop: str
 export type Office = {
   folder: string
   title: string
-  zones: Array<{ id?: string; name: string; desks: OfficeDesk[] }>
+  // note: the plaque's second line instead of the head count; strip: a floor folded to a band, nobody at work there;
+  // track: an epic floor's stages left to right, each [label, passed | next | rejected | ahead]
+  zones: Array<{ id?: string; name: string; desks: OfficeDesk[]; note?: string; strip?: boolean; track?: Array<[string, string]> | null }>
   guests: Record<string, { name: string; prop: string }>
   saved?: boolean
   lang?: string
@@ -53,4 +57,6 @@ export type Office = {
   generating?: boolean
   provider?: string
   accent?: string
+  // an orchestrating-epics epic: the coordinator's context against its compaction line
+  epic?: { context: number | null; limit: number | null }
 }
