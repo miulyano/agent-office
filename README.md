@@ -287,7 +287,7 @@ python3 server.py [флаги]
 | `scripts/install-launchd.sh [порт]` | Собрать приложение, поставить в автозапуск |
 | `scripts/uninstall-launchd.sh` | Убрать автозапуск и приложение |
 | `scripts/build-menubar.sh [порт]` | Только собрать `build/AgentOffice.app` |
-| `scripts/demo/shoot.sh [hero styles codex menubar gif]` | Переснять картинки README на вымышленных данных. Нужны Google Chrome, Node 22+, ffmpeg |
+| `scripts/demo/shoot.sh [hero styles codex menubar gif]` | Переснять картинки README на вымышленных данных, среди них эпик orchestrating-epics (`scripts/demo/epic.py`). Нужны Google Chrome, Node 22+, ffmpeg |
 
 ### Разработка
 
