@@ -2255,18 +2255,24 @@ def drawable(path):
     return None
 
 
+def listed(obj, key):
+    """Список из поля вида: нет или null — пусто, не список — ValueError, и файл пропускается целиком."""
+    items = obj.get(key)
+    if items is not None and not isinstance(items, list):
+        raise ValueError('%s: не список' % key)
+    return items or []
+
+
 def epic_children(views):
     """Сессии ролей эпиков: id сессии (или 8 знаков, как пишет мод) → (CLI-сессия оркестратора, роль с задачей),
     и так же по worktree роли. Этапы эпика дают последнюю попытку, `sessions` вида — все запущенные, с прежними попытками
     и возобновлёнными писателями; `worktrees` — тех, кого перезапустили в том же checkout и чей id ledger уже забыл."""
     out, paths = {}, {}
     for coord, (view, _) in views.items():
-        trees = view.get('worktrees')
-        for w in trees if isinstance(trees, list) else []:
+        for w in listed(view, 'worktrees'):
             if isinstance(w, dict) and isinstance(w.get('path'), str) and w.get('role') in ROLE_NAMES:
                 paths[w['path'].rstrip('/')] = (coord, '%s %s' % (ROLE_NAMES[w['role']], w.get('task', '?')))
-        launched = view.get('sessions')
-        for x in launched if isinstance(launched, list) else []:
+        for x in listed(view, 'sessions'):
             if isinstance(x, dict) and isinstance(x.get('session'), str) and x.get('role') in ROLE_NAMES:
                 out[x['session']] = (coord, '%s %s' % (ROLE_NAMES[x['role']], x.get('task', '?')))
         out.update({sid: (coord, who) for sid, who in epic_roles(view).items()})
@@ -2303,10 +2309,10 @@ def epic_roles(view):
     me = coord['session'] if isinstance(coord, dict) and isinstance(coord.get('session'), str) else ''
     out = {}
     for key, task in (('critiques', lambda x: 'r%s' % x.get('round')), ('researchers', lambda x: x.get('question')), ('packages', lambda x: x.get('id'))):
-        for x in view.get(key) or []:
+        for x in listed(view, key):
             if not isinstance(x, dict):
-                continue
-            for r in x.get('roles') or []:
+                raise ValueError('%s: элемент не объект' % key)
+            for r in listed(x, 'roles'):
                 if isinstance(r, dict) and isinstance(r.get('session'), str) and r.get('role') in ROLE_NAMES and r['session'] not in (me, me[:8]):
                     out[r['session']] = '%s %s' % (ROLE_NAMES[r['role']], task(x))
     return out

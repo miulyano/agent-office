@@ -1752,6 +1752,11 @@ class EpicTest(unittest.TestCase):
         for raw in ('{"schema": 1, "coordinator": {"session": "w1"}, "packages": 5}',
                     '{"schema": 1, "coordinator": {"session": "w1"}, "worktrees": [{"path": "/x", "role": ["qa"]}]}',
                     '{"schema": 1, "coordinator": {"session": "w1"}, "packages": [{"id": "P1", "roles": [{"session": "q1", "role": ["qa"]}]}]}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "packages": "broken"}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "worktrees": 5}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "sessions": {"a": 1}}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "critiques": [{"round": 1, "roles": "w1"}]}',
+                    '{"schema": 1, "coordinator": {"session": "w1"}, "packages": [{"id": "P1", "roles": {"session": "q1"}}]}',
                     '{"schema": 1, "x": %s}' % ('[' * 100000 + ']' * 100000)):
             self.view(raw=raw, name='bad')
             rows = {s['id']: s for s in server.sessions()}
