@@ -10,6 +10,7 @@ PORT=8799
 trap 'kill $SERVER $PULSE 2>/dev/null; rm -rf "$DEMO"' EXIT
 
 python3 "$ROOT/scripts/demo/gen.py" "$DEMO"
+python3 "$ROOT/scripts/demo/epic.py" "$DEMO" >/dev/null
 CLAUDE_CONFIG_DIR="$DEMO/claude" CODEX_HOME="$DEMO/codex" \
   python3 "$ROOT/server.py" --port "$PORT" --data "$DEMO/data" --shots "$DEMO/shots" &
 SERVER=$!
