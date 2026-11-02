@@ -217,6 +217,10 @@ def codex_session(now):
         put(kpath, codex_rows(kid, cwd, model, now, 'Часть задачи', nick=nick, source=src, parent=thread, n=n, tool=tool), 'w')
         kids.append(kpath)
     put(os.path.join(CODEX, 'session_index.jsonl'), [{'id': thread, 'thread_name': 'Прогноз погоды на Rust'}], 'w')
+    # the Codex app keeps its projects and which thread belongs to which: the list groups by them
+    with open(os.path.join(CODEX, '.codex-global-state.json'), 'w') as f:
+        json.dump({'local-projects': {'local-demo': {'id': 'local-demo', 'name': 'Прогноз погоды', 'rootPaths': [cwd]}},
+                   'thread-project-assignments': {thread: {'projectKind': 'local', 'projectId': 'local-demo'}}}, f, ensure_ascii=False)
     return path, kids
 
 

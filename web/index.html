@@ -103,8 +103,9 @@
   .fold summary:hover h2 { color: var(--text); }
   aside h2 { margin: 0 0 10px; font: 600 11px Menlo, monospace; letter-spacing: .12em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
 
-  .sess { --c: transparent; position: relative; display: block; width: calc(100% - 2 * var(--px)); text-align: left; margin: var(--px) var(--px) 6px; padding: 6px 10px 6px 14px; background: var(--bg); font: inherit; letter-spacing: 0; }
-  .sess::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--pc); }
+  /* сессия внутри проекта: со сдвигом под его строкой */
+  .sess { --c: transparent; position: relative; display: block; width: calc(100% - 2 * var(--px) - 12px); text-align: left; margin: var(--px) var(--px) 6px calc(var(--px) + 12px); padding: 6px 8px 6px 10px; background: var(--bg); font: inherit; letter-spacing: 0; cursor: pointer; }
+  .sess:focus-visible { --c: var(--text); outline: none; }
   /* фильтр провайдера в строке заголовка: каждый своим цветом */
   .seg.prov { display: flex; flex: none; flex-wrap: nowrap; gap: 8px; margin: 0 0 0 auto; background: none; box-shadow: none; }
   .seg.prov button { padding: 2px 1px 3px; color: var(--pc, var(--muted)); opacity: .75; font: 500 11px Menlo, monospace; letter-spacing: 0; }
@@ -118,10 +119,31 @@
   .sess.sel { --c: var(--gold); background: var(--floor); }
   .sess .t { display: flex; gap: 8px; align-items: center; font-weight: 600; }
   /* сессия, порождённая другой: под родителем, со сдвигом */
-  .sess.kid { width: calc(100% - 2 * var(--px) - 14px); margin-left: calc(var(--px) + 14px); }
+  .sess.kid { width: calc(100% - 2 * var(--px) - 26px); margin-left: calc(var(--px) + 26px); }
   .sess .br { color: var(--pc); opacity: .8; font-family: Menlo, monospace; font-size: 10px; }
-  .sess .t span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sess.pin .t::after { content: 'закреплена'; flex: none; margin-left: auto; color: var(--gold); font: 500 10px Menlo, monospace; }
+  .sess .t .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* проект: строка как заголовок колонки, провайдер — точкой его цвета */
+  .proj { display: flex; align-items: center; gap: 6px; margin: 12px 0 6px; font: 600 11px Menlo, monospace; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; }
+  .proj:first-child { margin-top: 4px; }
+  .proj .pn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .proj .pn:hover, .proj.sel .pn { color: var(--text); }
+  .proj .pd { width: 7px; height: 7px; border-radius: 50%; background: var(--pc); flex: none; }
+  /* ▸/▾, «⋯» и булавка: текстом, без рамки кнопки */
+  .proj button, .sess .t button { flex: none; margin: 0; padding: 0 3px; background: none; box-shadow: none; color: var(--muted); font: 600 12px Menlo, monospace; letter-spacing: 0; line-height: 1; }
+  .proj button:hover, .sess .t button:hover, .proj button:focus-visible, .sess .t button:focus-visible { background: none; color: var(--text); outline: none; }
+  .proj .fold-btn { font-size: 11px; }
+  /* «⋯» у сессии видно при наведении; прозрачная, а не скрытая: с клавиатуры до неё можно дойти */
+  .sess .t .dots { opacity: 0; }
+  .sess:hover .t .dots, .sess:focus-within .t .dots { opacity: 1; }
+  .pinned { flex: none; display: inline-flex; color: var(--muted); }
+  .pinline { border-top: 1px solid var(--line); margin: 6px var(--px) 8px calc(var(--px) + 12px); }
+  .pinline.top { margin-left: 0; }
+  @media (hover: none) { .sess .t .dots { opacity: 1; } }
+  /* меню «⋯»: табличка на панели, пункт подсвечивается полом */
+  .menu { position: absolute; z-index: 5; padding: var(--px); background: var(--panel); }
+  .menu[hidden] { display: none; }
+  .menu button { display: block; width: 100%; margin: 0; padding: 6px 12px; background: var(--panel); box-shadow: none; color: var(--text); font: 500 12px Menlo, monospace; text-align: left; }
+  .menu button:hover, .menu button:focus-visible { background: var(--floor); outline: none; }
   .sess .m { color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; padding-left: 16px; }
   .sess .d { width: 8px; height: 8px; border-radius: 50%; background: #4a4d68; flex: none; }
   .sess .d.live { background: var(--ok); }
@@ -175,6 +197,7 @@
     <summary><h2>СЕССИИ <span class="seg prov" id="prov"></span></h2></summary>
     <div id="sessions"><div class="empty">Ищу сессии…</div></div>
   </details>
+  <div class="menu pix" id="menu" role="menu" hidden><button id="menuPin" role="menuitem"></button></div>
   <div class="split" id="split" role="separator" aria-orientation="horizontal" aria-label="Высота сессий" aria-valuenow="45" tabindex="0" title="Потяни, чтобы поделить колонку между сессиями и журналом. Двойной клик вернёт как было"></div>
   <details class="log fold" id="logPanel" open>
     <summary><h2>ЖУРНАЛ</h2></summary>
@@ -186,6 +209,7 @@
 const { roleName, money, span, workedNow } = await import('./office.js?' + Date.now())
 const { mountFloors, OFFICES, TIME_OPTIONS } = await import('./floors.js?' + Date.now())
 const { funnyName, pngOf } = await import('./shot.js?' + Date.now())
+const { readPrefs, projects, isFolded, toggleFold, togglePin, pruneFolded, followTarget, visibleKids } = await import('./list.js?' + Date.now())
 
 const $ = id => document.getElementById(id)
 const logBox = $('log'), dot = $('dot'), status = $('status')
@@ -193,8 +217,8 @@ const titleEl = $('title'), list = $('sessions'), total = $('total'), plate = $(
 const PROVIDERS = { all: 'Все', claude: 'Claude', codex: 'Codex' }
 
 let sessions = []
-const opened = new Set()   // оркестраторы, у которых развёрнуты законченные роли
-let current = location.hash.slice(1)   // закреплённая сессия живёт в адресе
+const opened = new Set()   // эпики, у которых развёрнуты законченные роли
+let current = location.hash.slice(1)   // выбранная сессия живёт в адресе
 let auto = !current   // офис сам идёт за активной сессией, пока её не выбрали в списке
 let live = null, lastText = '', lastDraw = 0
 let provider = 'all'
@@ -325,62 +349,120 @@ function drawProviders() {
   }
 }
 
-// дети задачи идут сразу за своим корнем; корень без детей — обычная строка
-function nested(rows) {
-  const ids = new Set(rows.map(s => s.id))
-  const roots = rows.filter(s => !s.task || s.task === s.id || !ids.has(s.task))
-  return roots.flatMap(r => [r, ...rows.filter(s => s !== r && s.task === r.id).map(s => ({ ...s, kid: true }))])
+// сохранённые в браузере свёрнутые и закреплённые; без хранилища всё открыто и ничего не закреплено
+let prefs = readPrefs({ folded: null, pinned: null })
+try { prefs = readPrefs({ folded: localStorage.getItem('office.folded'), pinned: localStorage.getItem('office.pinned') }) } catch {}
+const PIN = '<svg class="pinmark" viewBox="0 0 8 10" width="8" height="10" aria-hidden="true"><path fill="currentColor" d="M2 0h4v1H5v3h2v2H5v4H3V6H1V4h2V1H2z"/></svg>'
+const dots = (key, label) => `<button class="dots" data-menu="${esc(key)}" aria-haspopup="menu" aria-label="${label}">⋯</button>`
+const foldBtn = (key, open, label) => `<button class="fold-btn" data-fold="${esc(key)}" aria-expanded="${open}" aria-label="${label}">${open ? '▾' : '▸'}</button>`
+
+function sessRow(s, kid, task) {
+  const cls = s.working ? 'busy' : s.isLive ? 'live' : ''
+  const work = s.working ? `в работе ${s.working}` : ago(s.at)
+  const agents = s.agents ? ` · агентов ${s.agents}` : ''
+  const usd = s.cost ? ` · <span class="usd">${money(s.cost)}</span>` : ''
+  const fon = s.shells ? ` · <span class="fon">фон ${s.shells}</span>` : ''
+  // минуты, а не секунды: строка меняется редко, и клик не попадает в заменённую кнопку
+  const worked = workedNow(s, Date.now()), time = worked >= 60000 ? ` · ${span(worked)}` : ''
+  const branch = kid && s.branch ? `<span class="br">${esc(s.branch)}</span> · ` : ''
+  // a coordinator says its epic and how many roles it has; a role says its role and task
+  const epic = s.epic ? `<i class="role">эпик ${esc(s.epic)}${task?.kids.length ? ' · ролей ' + task.kids.length : ''}</i>` : ''
+  const role = kid && s.role ? `<i class="role">${esc(s.role)}</i>` : ''
+  const chosen = s.id === current && !auto
+  // у корня с порождёнными свой ▸/▾; закрепить можно корень, порождённая живёт под ним
+  const fold = task?.kids.length ? foldBtn(task.key, !isFolded(prefs, task.key), 'Свернуть порождённые') : ''
+  const pin = task?.pinned ? `<span class="pinned" title="Закреплена">${PIN}</span>` : ''
+  return `<div class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${kid ? ' kid' : ''}" role="button" tabindex="0" data-id="${s.id}"${chosen ? ' title="Клик вернёт слежение за активной сессией"' : ''}>
+      <div class="t">${fold}<span class="d ${cls}"></span><span class="n">${kid ? '↳ ' : ''}${esc(s.title)}</span>${pin}${task ? dots(task.key, 'Меню сессии') : ''}</div>
+      <div class="m">${epic}${role}${branch}${work}${time}${agents}${fon}${usd}</div></div>`
 }
 
 function drawList() {
   drawProviders()
-  const rows = nested(shown())
+  const rows = shown()
   if (rows.length === 0) {
     delete list.dataset.html
     list.innerHTML = `<div class="empty">За сутки сессий${provider === 'all' ? '' : ' ' + PROVIDERS[provider]} не было.</div>`
     return
   }
-  const row = (s, n) => {
-    const cls = s.working ? 'busy' : s.isLive ? 'live' : ''
-    const work = s.working ? `в работе ${s.working}` : ago(s.at)
-    const agents = s.agents ? ` · агентов ${s.agents}` : ''
-    const usd = s.cost ? ` · <span class="usd">${money(s.cost)}</span>` : ''
-    const fon = s.shells ? ` · <span class="fon">фон ${s.shells}</span>` : ''
-    // минуты, а не секунды: строка меняется редко, и клик не попадает в заменённую кнопку
-    const worked = workedNow(s, Date.now()), time = worked >= 60000 ? ` · ${span(worked)}` : ''
-    const branch = s.kid && s.branch ? ` · <span class="br">${esc(s.branch)}</span>` : ''
-    // an epic's coordinator says its epic and how many roles it has; a role says its role and task
-    const epic = s.epic ? `<i class="role">эпик ${esc(s.epic)}${n ? ' · ролей ' + n : ''}</i>` : ''
-    const role = s.kid && s.role ? `<i class="role">${esc(s.role)}</i>` : ''
-    return `<button class="sess p-${s.provider}${s.id === current ? ' sel' : ''}${s.id === current && !auto ? ' pin' : ''}${s.kid ? ' kid' : ''}" data-id="${s.id}"${s.id === current && !auto ? ' title="Клик вернёт слежение за активной сессией"' : ''}>
-      <div class="t"><span class="d ${cls}"></span><span>${s.kid ? '↳ ' : ''}${esc(s.title)}</span></div>
-      <div class="m">${epic}${role}${esc(s.project)}${branch} · ${work}${time}${agents}${fon}${usd}</div></button>`
-  }
-  const groups = []
-  for (const s of rows) s.kid ? groups[groups.length - 1].kids.push(s) : groups.push({ root: s, kids: [] })
-  const html = groups.map(({ root, kids }) => {
-    // an epic's finished roles fold into «ещё N»: a long epic has dozens
-    const visible = root.epic && !opened.has(root.id) ? kids.filter(k => k.isLive || k.id === current) : kids
-    const more = kids.length - visible.length
-    const toggle = !root.epic || !kids.length ? '' : more ? `<button class="more" data-more="${root.id}">└ ещё ${more} законченных</button>`
-      : opened.has(root.id) ? `<button class="more" data-more="${root.id}">└ свернуть</button>` : ''
-    return row(root, kids.length) + visible.map(k => row(k, 0)).join('') + toggle
+  const all = projects(rows, prefs)
+  // a line under the last pinned item, if anything unpinned follows
+  const line = (items, i, top) => items[i].pinned && items[i + 1] && !items[i + 1].pinned ? `<div class="pinline${top ? ' top' : ''}"></div>` : ''
+  const html = all.map((p, pi) => {
+    const open = !isFolded(prefs, p.key)
+    // the office follows a session inside a folded project: the project row says so
+    const inside = !open && p.tasks.some(t => t.root.id === current || t.kids.some(k => k.id === current))
+    const head = `<div class="proj p-${p.provider}${inside ? ' sel' : ''}">${foldBtn(p.key, open, 'Свернуть проект')}<span class="pd" title="${PROVIDERS[p.provider] ?? p.provider}"></span><span class="pn" data-fold="${esc(p.key)}">${esc(p.name)}</span>${p.pinned ? `<span class="pinned" title="Закреплён">${PIN}</span>` : ''}${dots(p.key, 'Меню проекта')}</div>`
+    const tasks = !open ? '' : p.tasks.map((t, ti) => {
+      const kids = isFolded(prefs, t.key) ? { kids: [], more: 0 } : visibleKids(t, current, opened.has(t.key))
+      const toggle = !t.root.epic || !t.kids.length || isFolded(prefs, t.key) ? '' : kids.more ? `<button class="more" data-more="${t.key}">└ ещё ${kids.more} законченных</button>`
+        : opened.has(t.key) ? `<button class="more" data-more="${t.key}">└ свернуть</button>` : ''
+      return sessRow(t.root, false, t) + kids.kids.map(k => sessRow(k, true)).join('') + toggle + line(p.tasks, ti)
+    }).join('')
+    return head + tasks + line(all, pi, true)
   }).join('')
   // не трогать список без перемен: иначе клик попадает в уже заменённую кнопку
   if (html !== list.dataset.html) {
+    // the list redraws every few seconds: keyboard focus goes back to the same control
+    const f = document.activeElement, sel = !list.contains(f) ? '' : ['data-fold', 'data-menu', 'data-id', 'data-more'].filter(a => f.hasAttribute(a)).map(a => `[${a}="${CSS.escape(f.getAttribute(a))}"]`)[0] ?? ''
     list.dataset.html = html
     list.innerHTML = html
+    if (sel) list.querySelector(sel)?.focus()
+    if (menu.dataset.key && !list.querySelector(`[data-menu="${CSS.escape(menu.dataset.key)}"]`)) closeMenu()
   }
 }
 
+// меню «⋯»: одно на список, вне него, чтобы перерисовка его не сносила
+const menu = $('menu'), menuPin = $('menuPin')
+function openMenu(btn) {
+  const key = btn.dataset.menu, b = btn.getBoundingClientRect(), a = aside.getBoundingClientRect()
+  menu.dataset.key = key
+  menuPin.textContent = prefs.pinned.includes(key) ? 'Открепить' : 'Закрепить'
+  menu.hidden = false
+  menu.style.top = `${b.bottom - a.top + 2}px`
+  menu.style.right = `${a.right - b.right}px`
+  menuPin.focus()
+}
+function closeMenu() {
+  menu.hidden = true
+  delete menu.dataset.key
+}
+menuPin.addEventListener('click', () => {
+  const key = menu.dataset.key
+  prefs = togglePin(prefs, key)
+  save('office.pinned', JSON.stringify(prefs.pinned))
+  closeMenu()
+  drawList()
+  list.querySelector(`[data-menu="${CSS.escape(key)}"]`)?.focus()
+})
+document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target) && !e.target.closest('[data-menu]')) closeMenu() })
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !menu.hidden) closeMenu() })
+$('sessionsPanel').addEventListener('scroll', closeMenu, true)
+
 list.addEventListener('click', e => {
+  const f = e.target.closest('[data-fold]')
+  if (f) {
+    prefs = toggleFold(prefs, f.dataset.fold)
+    // only the folds of what is listed are kept, or storage grows with every day's sessions
+    const keys = projects(sessions, prefs).flatMap(p => [p.key, ...p.tasks.map(t => t.key)])
+    prefs = pruneFolded(prefs, keys)
+    save('office.folded', JSON.stringify(prefs.folded))
+    drawList()
+    return
+  }
+  const d = e.target.closest('[data-menu]')
+  if (d) { menu.dataset.key === d.dataset.menu && !menu.hidden ? closeMenu() : openMenu(d); return }
   const m = e.target.closest('.more')
   if (m) { opened.has(m.dataset.more) ? opened.delete(m.dataset.more) : opened.add(m.dataset.more); drawList(); return }
   const b = e.target.closest('.sess')
   if (!b) return
-  // клик закрепляет сессию, повторный по закреплённой снова отдаёт выбор офису
+  // клик выбирает сессию, повторный по выбранной снова отдаёт выбор офису
   auto = !auto && b.dataset.id === current
   auto ? autoPick() : pick(b.dataset.id)
+})
+// строка сессии — не <button> (внутри кнопки «⋯»), поэтому Enter и пробел нажимают её сами
+list.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('sess')) { e.preventDefault(); e.target.click() }
 })
 
 provBox.addEventListener('click', e => {
@@ -404,8 +486,9 @@ function pick(id) {
 
 // самая активная: где больше всего работают, потом — где писали последней
 function autoPick() {
-  const best = shown().sort((a, b) => (b.working - a.working) || (b.at - a.at))[0]
-  if (best) pick(best.id)
+  const rows = shown(), best = [...rows].sort((a, b) => (b.working - a.working) || (b.at - a.at))[0]
+  // the root's office holds the whole task: follow the task, not one of its sessions
+  if (best) pick(followTarget(rows, best.id))
 }
 
 async function pollSessions() {

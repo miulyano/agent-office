@@ -40,6 +40,7 @@ HOSTS = {'localhost', '127.0.0.1'}  # имена, по которым прихо
 CODEX_DIR = os.environ.get('CODEX_HOME') or os.path.expanduser('~/.codex')
 CODEX_SESSIONS = os.path.join(CODEX_DIR, 'sessions')
 CODEX_INDEX = os.path.join(CODEX_DIR, 'session_index.jsonl')  # названия тредов
+CODEX_STATE = os.path.join(CODEX_DIR, '.codex-global-state.json')  # проекты приложения Codex и чьи в них треды
 CODEX_ACCENT = '#4fb3c8'  # вывеска офиса Codex
 EPICS = os.path.join(CLAUDE_DIR, 'epics')  # эпики orchestrating-epics: <эпик>/view.json пишет мод координатора
 RECENT_S = 24 * 3600     # сессии в списке
@@ -2076,6 +2077,9 @@ def sessions():
             'task': root_of(sid, parent),
             'parent': parent.get(sid, ''),
             'branch': t.branch,
+            # проект, как в боковой панели Claude Code: папка, worktree — часть своего репозитория
+            'group': 'claude:' + (t.home or project_name(pdir, t.cwd)),
+            'groupName': folder_name(t.home) or project_name(pdir, t.cwd),
         })
         if sid in views:
             out[-1]['epic'] = str(views[sid][0].get('epic', '?'))
@@ -2155,6 +2159,7 @@ def codex_agents(kids, now_ms):
 
 def codex_sessions(now):
     titles = codex_titles()
+    projects = codex_projects()
     mains, kids = codex_threads(now)
     out = []
     for sid, t in mains.items():
@@ -2177,8 +2182,56 @@ def codex_sessions(now):
             'task': sid,
             'parent': '',
             'branch': '',
+            **codex_group(t.thread, t.home, projects),
         })
     return out
+
+
+def codex_group(thread, home, projects):
+    """Проект треда, как в приложении Codex: куда его отнесли, иначе проект его папки, иначе сама папка."""
+    named, assigned = projects
+    pid = assigned.get(thread)
+    if pid not in named:
+        pid = next((p for p, (_, roots) in named.items() if any(home == r or home.startswith(r.rstrip('/') + '/') for r in roots)), None)
+    if pid is not None:
+        return {'group': 'codex:' + pid, 'groupName': named[pid][0]}
+    return {'group': 'codex:' + home, 'groupName': folder_name(home) or home}
+
+
+CODEX_PROJECTS = {}  # mtime и разобранные проекты Codex
+
+
+def codex_projects():
+    """Проекты приложения Codex: ({id: (имя, папки)}, {тред: id}). Файл чужой и может смениться:
+    кривой пропускается целиком, с одной строкой в stderr на каждую его запись, треды тогда идут по папкам."""
+    mtime = mtime_of(CODEX_STATE)
+    if CODEX_PROJECTS.get('mtime') != mtime:
+        CODEX_PROJECTS.update(mtime=mtime, projects=({}, {}))
+        try:
+            state = {}
+            if mtime:  # no Codex app on this machine: no projects, nothing to tell
+                with open(CODEX_STATE) as f:
+                    state = json.load(f)
+            if not isinstance(state, dict):
+                raise ValueError('не объект')
+            local, assigned = state.get('local-projects') or {}, state.get('thread-project-assignments') or {}
+            if not isinstance(local, dict) or not isinstance(assigned, dict):
+                raise ValueError('проекты не словарь')
+            named = {}
+            for pid, p in local.items():
+                roots = p.get('rootPaths') if isinstance(p, dict) else None
+                if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
+                    raise ValueError('у проекта %s нет списка папок' % pid)
+                named[pid] = (str(p.get('name') or folder_name(roots[0] if roots else pid)), roots)
+            threads = {}
+            for thread, a in assigned.items():
+                if not isinstance(a, dict):
+                    raise ValueError('у треда %s проект не объект' % thread)
+                threads[thread] = a.get('projectId')
+            CODEX_PROJECTS['projects'] = (named, threads)
+        except Exception as e:  # wrong types, or a file Codex is rewriting right now
+            sys.stderr.write('проекты Codex %s пропущены: %s\n' % (CODEX_STATE, str(e)[:200]))
+    return CODEX_PROJECTS['projects']
 
 
 def codex_office(t, agents):
