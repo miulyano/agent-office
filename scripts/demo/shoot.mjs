@@ -1,4 +1,4 @@
-// Скриншоты демо-сервера через headless Chrome и CDP. Запускается из shoot.sh: node shoot.mjs <demo> <docs> [hero|styles|codex|menubar|gif]
+// Скриншоты демо-сервера через headless Chrome и CDP. Запускается из shoot.sh: node shoot.mjs <demo> <docs> [hero|styles|codex|epic|menubar|gif]
 import { spawn, execFileSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -69,11 +69,12 @@ try {
   const sessions = await (await fetch(BASE + '/api/sessions')).json()
   const sid = sessions.find(s => s.title.startsWith('Витрина')).id
   const codex = sessions.find(s => s.provider === 'codex').id
+  const epic = sessions.find(s => s.epic)?.id
 
   await cdp('Page.enable')
   await cdp('Runtime.enable')
 
-  if (want('hero') || want('styles') || want('codex') || want('gif')) {
+  if (want('hero') || want('styles') || want('codex') || want('epic') || want('gif')) {
     await size(1440, 1000)
     await go(`${BASE}/#${sid}`)
     await setTime('day')
@@ -105,6 +106,14 @@ try {
     await click(`.sess[data-id="${codex}"]`)
     await sleep(3000)
     await png('codex.png')
+  }
+  if (want('epic')) {
+    // офис координатора и список, где роли эпика висят под ним; эпик кладёт scripts/demo/epic.py
+    if (!epic) throw new Error('в демо нет эпика: запустите scripts/demo/epic.py')
+    await size(1440, 1000)
+    await click(`.sess[data-id="${epic}"]`)
+    await sleep(4000)
+    await png('epic.png')
   }
   if (want('gif')) {
     await size(1500, 1090)
@@ -162,6 +171,7 @@ const ffmpeg = (...args) => execFileSync('ffmpeg', ['-y', '-loglevel', 'error', 
 const scaled = (name, filter) => ffmpeg('-i', join(OUT, name), '-vf', filter, join(DOCS, name))
 if (want('hero')) scaled('overview.png', 'scale=1800:-1:flags=lanczos')
 if (want('codex')) scaled('codex.png', 'crop=2880:1480:0:0,scale=1600:-1:flags=lanczos')
+if (want('epic')) scaled('epic.png', 'scale=1600:-1:flags=lanczos')
 if (want('styles')) for (const name of ['style-cozy.png', 'style-business.png', 'style-loft.png', 'time-night.png']) scaled(name, 'scale=1000:-1:flags=lanczos')
 if (want('menubar')) for (const name of ['menubar-sessions.png', 'menubar-stats.png', 'menubar-tokens.png']) copyFileSync(join(OUT, name), join(DOCS, name))
 if (want('gif')) ffmpeg('-framerate', '8', '-i', join(OUT, 'frames', 'f%03d.png'), '-vf',

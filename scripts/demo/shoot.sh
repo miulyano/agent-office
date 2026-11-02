@@ -1,6 +1,6 @@
 #!/bin/sh
 # Переснять картинки README на вымышленных данных (macOS, Google Chrome, Node 22+, ffmpeg).
-# Usage: scripts/demo/shoot.sh [hero] [styles] [codex] [menubar] [gif]
+# Usage: scripts/demo/shoot.sh [hero] [styles] [codex] [epic] [menubar] [gif]
 # Журналы лежат во временной папке, настоящие сессии в кадр не попадают.
 set -eu
 
