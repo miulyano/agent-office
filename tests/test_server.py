@@ -352,6 +352,16 @@ class SessionsTest(unittest.TestCase):
         server.TAILS.clear()
         self.dir.cleanup()
 
+    def test_a_claude_session_belongs_to_the_project_of_its_folder(self):
+        for sid, cwd in (('s1', '/work/app'), ('s2', '/work/app/.claude/worktrees/fix')):
+            pdir = os.path.join(self.dir.name, re.sub(r'[^A-Za-z0-9]', '-', cwd))
+            os.makedirs(pdir)
+            with open(os.path.join(pdir, sid + '.jsonl'), 'w') as f:
+                f.write(assistant('m-' + sid).replace('"/work/app"', json.dumps(cwd)))
+        # a worktree belongs to its repository, as in the app's sidebar
+        self.assertEqual({s['id']: (s['group'], s['groupName']) for s in server.sessions()},
+                         {'s1': ('claude:/work/app', 'app'), 's2': ('claude:/work/app', 'app')})
+
     def test_sessions_report_today(self):
         pdir = os.path.join(self.dir.name, '-work-app')
         sub = os.path.join(pdir, 'sid1', 'subagents')
@@ -739,19 +749,30 @@ class CodexTailTest(unittest.TestCase):
 class CodexSessionsTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        self.saved = server.PROJECTS, server.CODEX_SESSIONS, server.CODEX_INDEX, server.DATA
+        self.saved = server.PROJECTS, server.CODEX_SESSIONS, server.CODEX_INDEX, server.CODEX_STATE, server.DATA
         server.PROJECTS = os.path.join(self.dir.name, 'claude')
         server.CODEX_SESSIONS = os.path.join(self.dir.name, 'sessions')
         server.CODEX_INDEX = os.path.join(self.dir.name, 'session_index.jsonl')
+        server.CODEX_STATE = os.path.join(self.dir.name, '.codex-global-state.json')
         server.DATA = self.dir.name
         os.makedirs(server.PROJECTS)
         os.makedirs(server.CODEX_SESSIONS)
         server.TAILS.clear()
+        server.CODEX_PROJECTS.clear()
 
     def tearDown(self):
-        server.PROJECTS, server.CODEX_SESSIONS, server.CODEX_INDEX, server.DATA = self.saved
+        server.PROJECTS, server.CODEX_SESSIONS, server.CODEX_INDEX, server.CODEX_STATE, server.DATA = self.saved
         server.TAILS.clear()
+        server.CODEX_PROJECTS.clear()
         self.dir.cleanup()
+
+    def codex_state(self, raw=None, **assigned):
+        """Состояние приложения Codex: проект «Игра» в /work/app и тред → проект."""
+        with open(server.CODEX_STATE, 'w') as f:
+            f.write(raw if raw is not None else json.dumps({
+                'local-projects': {'local-1': {'id': 'local-1', 'name': 'Игра', 'rootPaths': ['/work/game']},
+                                   'local-2': {'id': 'local-2', 'name': 'Приложение', 'rootPaths': ['/work/app']}},
+                'thread-project-assignments': {t: {'projectKind': 'local', 'projectId': p} for t, p in assigned.items()}}))
 
     def write(self, thread, text):
         day = os.path.join(server.CODEX_SESSIONS, '2026', '01', '01')
@@ -771,6 +792,50 @@ class CodexSessionsTest(unittest.TestCase):
         self.assertEqual(s['working'], 1)
         self.assertTrue(s['isLive'])
         self.assertAlmostEqual(s['today'], round(server.message_cost('gpt-5.6-sol', USAGE), 2))
+
+    def test_a_codex_thread_takes_its_project_from_the_app(self):
+        self.write(THREAD, meta() + context(ts=self.now()))
+        self.codex_state(**{THREAD: 'local-1'})
+        [s] = server.sessions()
+        self.assertEqual((s['group'], s['groupName']), ('codex:local-1', 'Игра'))
+
+    def test_a_codex_thread_without_a_project_takes_the_project_of_its_folder(self):
+        self.write(THREAD, meta() + context(ts=self.now()))
+        self.codex_state()
+        [s] = server.sessions()
+        self.assertEqual((s['group'], s['groupName']), ('codex:local-2', 'Приложение'))
+
+    def test_a_codex_thread_outside_any_project_belongs_to_its_folder(self):
+        self.write(THREAD, meta(cwd='/work/tools') + context(cwd='/work/tools', ts=self.now()))
+        self.codex_state()
+        [s] = server.sessions()
+        self.assertEqual((s['group'], s['groupName']), ('codex:/work/tools', 'tools'))
+
+    def test_a_broken_codex_state_falls_back_to_folders(self):
+        self.write(THREAD, meta() + context(ts=self.now()))
+        for raw in ('{не json', '[]', '{"local-projects": 5}', '{"local-projects": {"x": {"rootPaths": "/work/app"}}}',
+                    '{"thread-project-assignments": {"%s": "local-1"}}' % THREAD):
+            self.codex_state(raw=raw)
+            with mock.patch('sys.stderr', io.StringIO()):
+                [s] = server.sessions()
+            self.assertEqual((s['group'], s['groupName']), ('codex:/work/app', 'app'), raw)
+
+    def test_a_broken_codex_state_is_told_once_per_write(self):
+        self.write(THREAD, meta() + context(ts=self.now()))
+        with mock.patch('sys.stderr', io.StringIO()) as err:
+            self.codex_state(raw='{не json')
+            for _ in range(3):
+                server.sessions()
+            self.assertEqual(len([l for l in err.getvalue().splitlines() if server.CODEX_STATE in l]), 1)
+
+    def test_claude_and_codex_in_one_folder_are_two_projects(self):
+        self.write(THREAD, meta() + context(ts=self.now()))
+        pdir = os.path.join(server.PROJECTS, '-work-app')
+        os.makedirs(pdir)
+        with open(os.path.join(pdir, 'c1.jsonl'), 'w') as f:
+            f.write(assistant('m1', ts=self.now()))
+        groups = {s['provider']: (s['group'], s['groupName']) for s in server.sessions()}
+        self.assertEqual(groups, {'claude': ('claude:/work/app', 'app'), 'codex': ('codex:/work/app', 'app')})
 
     def test_prompt_is_the_title_until_codex_names_the_thread(self):
         self.write(THREAD, meta() + item('UserMessage', self.now(), content=[{'type': 'text', 'text': 'почини сборку'}]))
