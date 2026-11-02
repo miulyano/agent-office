@@ -7,7 +7,7 @@
 ## Команды
 
 ```bash
-npm test            # тесты сервера, зависимости не нужны
+npm test            # тесты сервера и списка (src/list.ts на node 22.6+), зависимости не нужны
 npm run check       # типы TypeScript
 npm run build       # src/*.ts → web/*.js
 python3 server.py --port 8768

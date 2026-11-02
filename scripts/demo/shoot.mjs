@@ -77,6 +77,10 @@ try {
   if (want('hero') || want('styles') || want('codex') || want('epic') || want('gif')) {
     await size(1440, 1000)
     await go(`${BASE}/#${sid}`)
+    // the main session's project pinned at the top of the list, as a viewer would keep it
+    const group = sessions.find(s => s.id === sid).group
+    await js(`localStorage.setItem('office.pinned', ${JSON.stringify(JSON.stringify(['p:' + group]))}); location.reload()`)
+    await sleep(2500)
     await setTime('day')
   }
   if (want('hero')) {
