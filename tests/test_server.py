@@ -1795,6 +1795,16 @@ class EpicTest(unittest.TestCase):
         self.assertEqual((rows['bg-root']['parent'], rows['bg-root'].get('role')), ('', None))
         self.assertEqual(rows['q1-again']['parent'], 'coord')
 
+    def test_a_worktree_the_coordinator_works_in_takes_no_sessions(self):
+        # the coordinator opened in a worktree of its repo: its project is the repo, but its own folder is the worktree
+        tree = '/work/app/.claude/worktrees/epic'
+        self.journal('-work-app', 'coord', assistant('c1', stop='end_turn').replace('"/work/app"', '"%s"' % tree))
+        self.journal('-work-app', 'bg-there', self.bg('b1', tree))
+        self.edit_view(lambda v: v['worktrees'].append({'path': tree, 'role': 'writer', 'task': 'P9'}))
+        rows = {s['id']: s for s in server.sessions()}
+        self.assertEqual((rows['bg-there']['parent'], rows['bg-there'].get('role')), ('', None))
+        self.assertEqual(rows['q1-again']['parent'], 'coord')
+
     def test_coordinator_is_live_while_its_mod_rewrites_the_view(self):
         self.journal('-work-app', 'coord', assistant('c1', stop='end_turn'), age=20 * 60)
         live = lambda: [s for s in server.sessions() if s['id'] == 'coord'][0]['isLive']

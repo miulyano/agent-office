@@ -385,6 +385,7 @@ class Tail:
         self.prompt = ''
         self.cwd = ''
         self.home = ''         # папка, где сессию открыли
+        self.opened = ''       # папка, где сессию открыли: worktree, а не репозиторий
         self.launched = ''     # фоновая сессия (claude --bg): папка, где её запустили; у чата пусто
         self.branch = ''
         self.roster = {}       # агенты, доступные сессии: тип → описание
@@ -496,6 +497,7 @@ class Tail:
         self.cwd = d.get('cwd') or self.cwd
         if not self.home:  # первая запись с папкой: где сессию открыли
             self.home = home_of(self.cwd)
+            self.opened = self.cwd
             self.launched = self.cwd if d.get('sessionKind') == 'bg' else ''
         self.branch = d.get('gitBranch') or self.branch
         msg = d.get('message') or {}
@@ -2276,8 +2278,8 @@ def epic_tree(tails, views):
     роли висят под ним. Отдаёт и роли: сессия → (координатор, роль с задачей) или None."""
     parent = task_tree(tails)
     by_id, by_path = epic_children(views)
-    # a worktree that is a coordinator's own folder would take every background session started in the repo
-    homes = {tails[c][0].home for c in views if c in tails}
+    # a worktree that is a coordinator's own folder, its repo or the worktree it works in, would take every background session started there
+    homes = {p.rstrip('/') for c in views if c in tails for p in (tails[c][0].home, tails[c][0].opened)}
     children = by_id, {p: hit for p, hit in by_path.items() if p not in homes}
     roles = {sid: child_of(sid, t.launched, children) for sid, (t, _, _) in tails.items() if sid not in views}
     parent.update({sid: hit[0] for sid, hit in roles.items() if hit})
