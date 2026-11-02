@@ -18,6 +18,12 @@ test('sessions group by project, Claude and Codex apart', () => {
   assert.deepEqual(list.map(p => [p.name, p.provider]), [['app', 'claude'], ['app', 'codex']])
 })
 
+test('a row from a server without projects groups by provider and folder', () => {
+  const old = (id, at, provider, project) => ({ id, at, provider, project, isLive: false, task: id })
+  const list = projects([old('a', 3, 'claude', 'app'), old('x', 2, 'codex', 'app'), old('b', 1, 'claude', 'site')], none)
+  assert.deepEqual(list.map(p => [p.key, p.name, p.provider]), [['p:claude:app', 'app', 'claude'], ['p:codex:app', 'app', 'codex'], ['p:claude:site', 'site', 'claude']])
+})
+
 test('spawned sessions stay under their root inside the project', () => {
   const list = projects([row('kid', 5, { task: 'root' }), row('root', 1), row('other', 3)], none)
   assert.deepEqual(ids(list), [['p:claude:/work/app', [['root', ['kid']], ['other', []]]]])

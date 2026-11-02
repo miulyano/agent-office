@@ -2,7 +2,8 @@
 // No DOM here and only type imports: node runs the tests on this file as it is.
 
 // a row of /api/sessions, the fields the list orders by
-export type Row = { id: string; provider: string; at: number; isLive: boolean; task: string; group: string; groupName: string; epic?: string }
+// group and groupName come from the server; a server older than the page has none, then provider and folder stand in
+export type Row = { id: string; provider: string; at: number; isLive: boolean; task: string; group?: string; groupName?: string; project?: string; epic?: string }
 export type Task<R extends Row = Row> = { key: string; root: R; kids: R[]; at: number; pinned: boolean }
 export type Project<R extends Row = Row> = { key: string; name: string; provider: string; tasks: Task<R>[]; at: number; pinned: boolean }
 // folded: only what the viewer toggled, everything else is open; pinned: in the order it was pinned
@@ -37,9 +38,10 @@ export function projects<R extends Row>(rows: R[], prefs: Prefs): Project<R>[] {
   for (const root of roots) {
     const kids = rows.filter(s => s !== root && s.task === root.id).sort((a, b) => b.at - a.at)
     const at = Math.max(root.at, ...kids.map(k => k.at))
-    const g = byGroup.get(root.group) ?? { name: root.groupName, provider: root.provider, tasks: [] }
+    const group = root.group ?? `${root.provider}:${root.project ?? ''}`
+    const g = byGroup.get(group) ?? { name: root.groupName ?? root.project ?? '', provider: root.provider, tasks: [] }
     g.tasks.push({ key: root.id, root, kids, at })
-    byGroup.set(root.group, g)
+    byGroup.set(group, g)
   }
   const list = [...byGroup].map(([group, g]) => ({
     key: 'p:' + group, name: g.name, provider: g.provider,

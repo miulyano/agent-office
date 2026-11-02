@@ -33,9 +33,10 @@ export function projects(rows, prefs) {
     for (const root of roots) {
         const kids = rows.filter(s => s !== root && s.task === root.id).sort((a, b) => b.at - a.at);
         const at = Math.max(root.at, ...kids.map(k => k.at));
-        const g = byGroup.get(root.group) ?? { name: root.groupName, provider: root.provider, tasks: [] };
+        const group = root.group ?? `${root.provider}:${root.project ?? ''}`;
+        const g = byGroup.get(group) ?? { name: root.groupName ?? root.project ?? '', provider: root.provider, tasks: [] };
         g.tasks.push({ key: root.id, root, kids, at });
-        byGroup.set(root.group, g);
+        byGroup.set(group, g);
     }
     const list = [...byGroup].map(([group, g]) => ({
         key: 'p:' + group, name: g.name, provider: g.provider,
